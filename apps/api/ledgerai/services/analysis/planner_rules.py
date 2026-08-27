@@ -15,7 +15,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import date
 
-from .dates import mentions_comparison, previous_period, resolve_date_phrase
+from .dates import mentions_comparison, previous_period, resolve_date_phrase, shift_month
 from .plan import (
     AnalysisPlan,
     ChartHint,
@@ -57,6 +57,8 @@ _NET = re.compile(r"\b(net|cash ?flow|in and out|saved|savings rate)\b")
 _TOP_N_NUMBER = re.compile(r"\btop\s+(\d{1,2})\b")
 _INCLUDE_TRANSFERS = re.compile(r"\b(includ\w*\s+transfers?|with\s+transfers?|"
                                 r"transfers?\s+included)\b")
+# Repetition needs several months of history to be visible at all.
+RECURRING_DEFAULT_MONTHS = 6
 
 
 @dataclass(slots=True)
@@ -71,6 +73,8 @@ class UserVocabulary:
     category_slugs: dict[str, str] = field(default_factory=dict)  # slug -> display name
     merchants: list[str] = field(default_factory=list)
     account_names: dict[str, str] = field(default_factory=dict)  # id -> name
+    # Aggregates are restricted to this; Ledger AI does not convert currencies.
+    base_currency: str = "USD"
 
 
 @dataclass(slots=True)
@@ -112,8 +116,11 @@ def _match_categories(
         "entertainment": ("entertainment", "movies", "games", "concerts", "fun"),
         "travel": ("travel", "flights", "hotels", "vacation", "trips"),
         "income": ("income", "salary", "paycheck", "earnings"),
-        "transfers": ("transfers", "payments"),
-        "fees": ("fees", "charges", "bank fees"),
+        # "payments" and "charges" are ordinary English words for any
+        # transaction, not names for these categories. Matching them filtered
+        # "which charges repeat every month?" down to bank fees.
+        "transfers": ("transfers", "card payment", "card payments"),
+        "fees": ("fees", "bank fees", "bank charges", "service charge", "overdraft"),
     }
     claimed = claimed_by_merchant.lower()
     matched: list[str] = []
@@ -171,6 +178,8 @@ class RulePlanner:
         wants_comparison = mentions_comparison(text)
         compare_to: DateRange | None = previous_period(period) if wants_comparison else None
 
+        assumptions: list[str] = []
+
         # --- direction ------------------------------------------------------
         if _NET.search(text):
             direction = Direction.NET
@@ -188,7 +197,6 @@ class RulePlanner:
         matched_filters += [f"merchant: {m}" for m in merchants]
 
         # --- intent + shape -------------------------------------------------
-        assumptions: list[str] = []
         metric = Metric.SUM
         if _AVERAGE.search(text):
             metric = Metric.AVG
@@ -198,6 +206,20 @@ class RulePlanner:
         if _RECURRING.search(text):
             intent, group_by, chart = Intent.RECURRING, GroupBy.MERCHANT, ChartHint.BAR
             matched_intent = "repeating charges"
+            # A charge cannot be shown to repeat across months inside a 30-day
+            # default window, so widen it when the question named no period.
+            if "no period specified" in period.label:
+                widened_start = shift_month(period.end, -RECURRING_DEFAULT_MONTHS)
+                period = DateRange(
+                    start=widened_start.replace(day=1),
+                    end=period.end,
+                    label=f"the last {RECURRING_DEFAULT_MONTHS} months",
+                )
+                assumptions.append(
+                    f"No period named — looked across the last "
+                    f"{RECURRING_DEFAULT_MONTHS} months, since repetition cannot be "
+                    "seen in a shorter window."
+                )
         elif _TOP_N.search(text):
             intent = Intent.TOP_N
             group_by = GroupBy.CATEGORY if categories or "categor" in text else GroupBy.MERCHANT
@@ -275,6 +297,7 @@ class RulePlanner:
         plan = AnalysisPlan(
             intent=intent,
             direction=direction,
+            currency=vocab.base_currency,
             date_range=period,
             compare_to=compare_to,
             filters=filters,

@@ -6,12 +6,17 @@
  * long session never fails mid-interaction.
  */
 import type {
+  AlertList,
   Capabilities,
+  ConfirmResponse,
   CorrectionImpact,
   Dashboard,
   Facets,
   Page,
+  MatchCandidatesResponse,
   Profile,
+  ReceiptDetail,
+  ReceiptSummary,
   RunSummary,
   Transaction,
   TransactionUpdateResult,
@@ -144,6 +149,24 @@ function toQueryString(query: object): string {
   return encoded ? `?${encoded}` : '';
 }
 
+/**
+ * Fetch an authorized binary asset as an object URL.
+ *
+ * The receipt image endpoint requires a bearer token, so it cannot be used as
+ * a plain <img src>. The caller must revoke the URL when done.
+ */
+export async function fetchAuthorizedObjectUrl(path: string): Promise<string> {
+  const token = await getAccessToken();
+  const response = await fetch(`${API_URL}${path}`, {
+    headers: { Authorization: `Bearer ${token}` },
+    cache: 'no-store',
+  });
+  if (!response.ok) {
+    throw new ApiError(`Could not load that file (${response.status}).`, response.status);
+  }
+  return URL.createObjectURL(await response.blob());
+}
+
 export const api = {
   dashboard: () => request<Dashboard>('/api/dashboard'),
 
@@ -183,4 +206,68 @@ export const api = {
   analysisRuns: () => request<RunSummary[]>('/api/analysis/runs'),
 
   profile: () => request<Profile>('/api/settings/profile'),
+
+  /* --- receipts --------------------------------------------------------- */
+
+  receipts: (statusFilter?: string) =>
+    request<ReceiptSummary[]>(
+      `/api/receipts${toQueryString({ status_filter: statusFilter })}`,
+    ),
+
+  receipt: (id: string) => request<ReceiptDetail>(`/api/receipts/${id}`),
+
+  /** Authorized image endpoint. Never a public URL. */
+  receiptImageUrl: (id: string, page = 1) =>
+    `${API_URL}/api/receipts/${id}/image?page=${page}`,
+
+  updateReceipt: (
+    id: string,
+    body: Partial<{
+      merchant: string;
+      posted_date: string;
+      subtotal_cents: number;
+      tax_cents: number;
+      tip_cents: number;
+      total_cents: number;
+      currency: string;
+    }>,
+  ) =>
+    request<ReceiptDetail>(`/api/receipts/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    }),
+
+  matchCandidates: (id: string) =>
+    request<MatchCandidatesResponse>(`/api/receipts/${id}/match-candidates`),
+
+  rejectCandidate: (id: string, transactionId: string) =>
+    request<void>(`/api/receipts/${id}/reject-candidate`, {
+      method: 'POST',
+      body: JSON.stringify({ transaction_id: transactionId }),
+    }),
+
+  confirmReceipt: (
+    id: string,
+    body: {
+      mode: 'create' | 'link';
+      account_id?: string;
+      category_id?: string;
+      transaction_id?: string;
+    },
+  ) =>
+    request<ConfirmResponse>(`/api/receipts/${id}/confirm`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  /* --- alerts ----------------------------------------------------------- */
+
+  alerts: (statusFilter: string = 'open') =>
+    request<AlertList>(`/api/alerts${toQueryString({ status_filter: statusFilter })}`),
+
+  updateAlert: (id: string, status: 'open' | 'dismissed' | 'resolved') =>
+    request<unknown>(`/api/alerts/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status }),
+    }),
 };

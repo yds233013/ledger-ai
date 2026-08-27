@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import Link from 'next/link';
 
 import { CategoryBarChart, TrendLineChart } from '@/components/charts/spend-charts';
+import { AlertsPanel } from '@/components/dashboard/alerts-panel';
 import { StatTile } from '@/components/dashboard/stat-tile';
 import {
   Badge,
@@ -76,12 +77,18 @@ export default function DashboardPage() {
         </Link>
       </header>
 
+      {data.currency_note ? (
+        <p className="rounded-lg border border-line bg-surface-sunken px-4 py-3 text-xs leading-relaxed text-ink-muted">
+          <strong className="font-medium text-ink">Currency.</strong> {data.currency_note}
+        </p>
+      ) : null}
+
       <section
         aria-label="Key figures"
         className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4"
       >
         <StatTile
-          label={`Spending — ${data.period_label}`}
+          label={`Spending — ${data.period_label} (${data.base_currency})`}
           value={formatCents(data.total_spend_cents)}
           delta={data.delta_pct}
           deltaDirection={data.delta_direction}
@@ -99,11 +106,13 @@ export default function DashboardPage() {
         />
         <StatTile
           label="Needs review"
-          value={data.needs_review_count.toLocaleString()}
+          value={(data.needs_review_count + data.pending_receipt_count).toLocaleString()}
           hint={
-            data.needs_review_count > 0
-              ? 'Low-confidence categories to confirm'
-              : 'Everything categorized confidently'
+            data.pending_receipt_count > 0
+              ? `${data.needs_review_count} transactions and ${data.pending_receipt_count} receipts`
+              : data.needs_review_count > 0
+                ? 'Low-confidence categories to confirm'
+                : 'Everything categorized confidently'
           }
         />
       </section>
@@ -172,20 +181,11 @@ export default function DashboardPage() {
           </ul>
         </Card>
 
-        <Card>
-          <CardHeader title="Alerts" subtitle="Duplicates and unusual charges" />
-          <div className="p-5">
-            <div className="rounded-lg border border-dashed border-line bg-surface-sunken p-4">
-              <Badge tone="neutral">Phase 2</Badge>
-              <p className="mt-2 text-sm text-ink">Not implemented yet</p>
-              <p className="mt-1 text-xs leading-relaxed text-ink-muted">{data.alerts_note}</p>
-              <p className="mt-3 text-xs leading-relaxed text-ink-faint">
-                Planned: exact and near-duplicate detection, and unusual-amount flags based on
-                each category&apos;s median and median absolute deviation.
-              </p>
-            </div>
-          </div>
-        </Card>
+        <AlertsPanel
+          alerts={data.alerts}
+          openCount={data.open_alert_count}
+          note={data.alerts_note}
+        />
       </div>
     </div>
   );

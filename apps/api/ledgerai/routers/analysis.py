@@ -35,12 +35,18 @@ SUGGESTED_QUESTIONS = [
     "What are my top 5 merchants this year?",
     "Which charges repeat every month?",
     "Show me all my Blue Bottle Coffee transactions",
+    "How much did I spend in total last month?",
+    "What is my average dining transaction this year?",
 ]
 
 
 class AskRequest(BaseModel):
     question: str = Field(min_length=2, max_length=1000)
     use_cache: bool = True
+    # A follow-up is (previous run, named refinement) — never free text, so it
+    # carries no ambiguous conversational state.
+    refine_from_run_id: uuid.UUID | None = None
+    refinement: str | None = Field(default=None, max_length=120)
 
 
 class RunSummary(BaseModel):
@@ -91,7 +97,7 @@ async def capabilities(user: CurrentUser) -> CapabilitiesOut:
 @router.post("/runs")
 async def ask(payload: AskRequest, request: Request, user: CurrentUser, session: DbSession):
     """Stream one analysis as Server-Sent Events."""
-    runner = AnalysisRunner(session, user.id)
+    runner = AnalysisRunner(session, user.id, base_currency=user.base_currency)
 
     async def event_stream() -> AsyncIterator[str]:
         try:
@@ -99,6 +105,8 @@ async def ask(payload: AskRequest, request: Request, user: CurrentUser, session:
                 payload.question,
                 is_disconnected=request.is_disconnected,
                 use_cache=payload.use_cache,
+                refine_from=payload.refine_from_run_id,
+                refinement=payload.refinement,
             ):
                 yield _sse(event.event, event.data)
         except Exception:  # noqa: BLE001 - a stream must always terminate cleanly

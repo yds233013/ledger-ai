@@ -27,6 +27,12 @@ export function Answer({
   return (
     <div className="space-y-4">
       <Card className="p-5">
+        {result.refined_from ? (
+          <p className="mb-3 rounded-lg border border-line bg-surface-sunken px-3 py-2 text-xs text-ink-muted">
+            Refined from: <span className="text-ink">“{result.refined_from}”</span>
+          </p>
+        ) : null}
+
         <div className="mb-3 flex flex-wrap items-center gap-2">
           <AiBadge aiEnabled={aiEnabled} />
           {result.cached ? <Badge tone="neutral">Cached result</Badge> : null}

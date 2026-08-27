@@ -8,6 +8,7 @@ import { cn } from '@/lib/cn';
 const LINKS = [
   { href: '/dashboard', label: 'Dashboard' },
   { href: '/upload', label: 'Upload' },
+  { href: '/receipts', label: 'Receipts' },
   { href: '/transactions', label: 'Transactions' },
   { href: '/ask', label: 'Ask Ledger' },
   { href: '/settings', label: 'Settings' },

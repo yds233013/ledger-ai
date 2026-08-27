@@ -132,6 +132,10 @@ def _base_conditions(
     """
     conditions: list[Any] = [
         Transaction.user_id == user_id,
+        # One currency, always. This lives in the shared predicate builder for
+        # the same reason user_id does: no query path can forget it, so no
+        # aggregate can ever add USD to EUR.
+        Transaction.currency == plan.currency,
         Transaction.posted_date >= period.start,
         Transaction.posted_date <= period.end,
     ]
@@ -416,6 +420,29 @@ async def execute_plan(
             "a subscription was charged — it cannot show whether you used it."
         )
     return result
+
+
+async def excluded_currency_counts(
+    session: AsyncSession, user_id: uuid.UUID, plan: AnalysisPlan
+) -> dict[str, int]:
+    """Transactions in the window that another currency put out of scope.
+
+    Reported to the user rather than silently dropped — an aggregate that
+    quietly ignores rows is worse than one that says what it left out.
+    """
+    rows = (
+        await session.execute(
+            select(Transaction.currency, func.count(Transaction.id))
+            .where(
+                Transaction.user_id == user_id,
+                Transaction.currency != plan.currency,
+                Transaction.posted_date >= plan.date_range.start,
+                Transaction.posted_date <= plan.date_range.end,
+            )
+            .group_by(Transaction.currency)
+        )
+    ).all()
+    return {row[0]: int(row[1]) for row in rows}
 
 
 async def load_vocabulary(

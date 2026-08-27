@@ -101,8 +101,9 @@ async def test_dashboard_is_scoped_to_the_caller(
 
 
 async def test_transaction_list_is_scoped(client: AsyncClient, auth_headers: dict) -> None:
+    # 8 USD rows plus the one EUR row the currency tests rely on.
     data = (await client.get("/api/transactions", headers=auth_headers)).json()
-    assert data["total"] == 8
+    assert data["total"] == 9
     assert all("OTHER USER SECRET" not in item["raw_description"] for item in data["items"])
 
 
@@ -120,7 +121,7 @@ async def test_other_user_sees_only_their_own_row(
         ("category_slug=groceries", 3),
         ("category_slug=dining", 3),
         ("search=whole", 2),
-        ("start_date=2026-07-01", 7),
+        ("start_date=2026-07-01", 8),
         ("min_amount=100", 2),
         ("review=needs_review", 0),
     ],
@@ -137,7 +138,7 @@ async def test_transaction_pagination(client: AsyncClient, auth_headers: dict) -
     assert len(page["items"]) == 2
     assert page["has_more"] is True
 
-    last = (await client.get("/api/transactions?limit=2&offset=6", headers=auth_headers)).json()
+    last = (await client.get("/api/transactions?limit=2&offset=8", headers=auth_headers)).json()
     assert last["has_more"] is False
 
 
@@ -715,7 +716,13 @@ async def test_profile_discloses_what_is_actually_available(
     features = {f["key"]: f for f in data["features"]}
     assert features["csv_upload"]["available"] is True
     assert features["ask_ledger"]["available"] is True
-    # Honest about what is not built yet.
-    assert features["receipt_ocr"]["available"] is False
+    assert features["receipt_ocr"]["available"] is True
+    assert features["alerts"]["available"] is True
+
+    # Still honest about what is not built.
+    assert features["currency_conversion"]["available"] is False
+    assert "never added to your base-currency totals" in features["currency_conversion"]["note"]
+    assert features["export"]["available"] is False
+    assert "Phase 3" in features["export"]["note"]
     assert features["connected_accounts"]["available"] is False
     assert "does not connect to any real" in features["connected_accounts"]["note"]

@@ -145,6 +145,7 @@ def make_transaction(  # noqa: PLR0913
     merchant: str,
     category_slug: str | None = None,
     index: int = 0,
+    currency: str = "USD",
 ) -> Transaction:
     category_id = None
     if category_slug:
@@ -162,6 +163,7 @@ def make_transaction(  # noqa: PLR0913
         normalized_description=normalized,
         merchant=merchant,
         merchant_key=merchant_key(merchant),
+        currency=currency,
         category_id=category_id,
         confidence=1 if category_slug else 0,
         needs_review=category_slug is None,
@@ -225,6 +227,12 @@ def demo_data(sync_db: Session) -> dict:
     make_transaction(sync_db, other, other_account, posted=july + timedelta(days=4),
                      cents=-99999, description="OTHER USER SECRET", merchant="Other Secret",
                      category_slug="groceries", index=7)
+
+    # A EUR charge the user also holds. Ledger AI does not convert, so this
+    # must be excluded from USD totals and disclosed, never silently summed.
+    make_transaction(sync_db, user, account, posted=july + timedelta(days=9),
+                     cents=-7000, description="SANDBOX BOOKS EU", merchant="Sandbox Books EU",
+                     category_slug="shopping", index=11, currency="EUR")
 
     sync_db.commit()
     return {"user": user, "other": other, "account": account}

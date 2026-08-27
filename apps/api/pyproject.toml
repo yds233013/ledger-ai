@@ -22,6 +22,14 @@ dependencies = [
     "pillow>=11.0",
     "pyyaml>=6.0",
     "python-dotenv>=1.0",
+    # OCR: pytesseract wraps the tesseract binary; pypdfium2 rasterizes PDFs
+    # with no system dependency (poppler is not required) under a permissive
+    # licence, unlike PyMuPDF's AGPL.
+    "pytesseract>=0.3.13",
+    "pypdfium2>=4.30",
+    "rapidfuzz>=3.10",
+    # Optional AI. Never required: the app is fully functional with no key.
+    "openai>=1.60",
 ]
 
 [project.optional-dependencies]
@@ -53,6 +61,9 @@ ignore = ["S101", "B008"]  # assert in tests; FastAPI Depends() in defaults
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["S105", "S106"]
 "alembic/*" = ["N999", "E501"]
+# The seed and sample generators use a seeded PRNG on purpose: the demo data
+# must be byte-identical on every machine. It is not cryptographic material.
+"../../scripts/*" = ["S311"]
 
 [tool.mypy]
 python_version = "3.12"

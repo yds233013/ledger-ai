@@ -11,7 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from .config import settings
-from .routers import analysis, auth, dashboard, transactions, uploads
+from .routers import alerts, analysis, auth, dashboard, receipts, transactions, uploads
 from .routers import settings as settings_router
 
 logging.basicConfig(
@@ -79,4 +79,6 @@ app.include_router(uploads.router)
 app.include_router(transactions.router)
 app.include_router(dashboard.router)
 app.include_router(analysis.router)
+app.include_router(receipts.router)
+app.include_router(alerts.router)
 app.include_router(settings_router.router)

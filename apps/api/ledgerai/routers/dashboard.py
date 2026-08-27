@@ -7,14 +7,24 @@ between the user's own accounts isn't counted as a purchase.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 
 from fastapi import APIRouter
 from pydantic import BaseModel
-from sqlalchemy import Select, func, or_, select
+from sqlalchemy import Select, case, func, or_, select
 
 from ..deps import CurrentUser, DbSession
-from ..models import Account, Category, Transaction
+from ..models import (
+    Account,
+    Alert,
+    AlertSeverity,
+    AlertStatus,
+    Category,
+    Receipt,
+    ReceiptStatus,
+    Transaction,
+)
+from ..services.alerts import SEVERITY_INTENT
 from ..services.analysis.dates import month_bounds, shift_month
 from ..services.analysis.executor import TRANSFER_SLUGS
 
@@ -22,6 +32,7 @@ router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
 
 TREND_MONTHS = 12
 RECENT_LIMIT = 8
+DASHBOARD_ALERT_LIMIT = 8
 
 
 class CategorySlice(BaseModel):
@@ -51,6 +62,21 @@ class RecentTransaction(BaseModel):
     needs_review: bool
 
 
+class AlertOut(BaseModel):
+    id: str
+    alert_type: str
+    severity: str
+    severity_note: str
+    message: str
+    status: str
+    evidence: dict
+    created_at: datetime
+    transaction_id: str
+    transaction_merchant: str
+    transaction_date: date
+    transaction_amount: float
+
+
 class DashboardOut(BaseModel):
     period_label: str
     total_spend: float
@@ -71,17 +97,31 @@ class DashboardOut(BaseModel):
     account_count: int
     earliest_transaction: date | None
     latest_transaction: date | None
-    alerts_enabled: bool = False
+    base_currency: str
+    excluded_currencies: dict[str, int]
+    currency_note: str | None
+    pending_receipt_count: int
+    alerts_enabled: bool = True
+    open_alert_count: int = 0
+    alerts: list[AlertOut] = []
     alerts_note: str = (
-        "Duplicate and unusual-charge detection is a Phase 2 feature and is not "
-        "active yet."
+        "Alerts describe unusual patterns in your own uploaded data. They are not "
+        "fraud detection and do not mean anything is wrong."
     )
 
 
-def _spend_conditions(user_id, start: date, end: date) -> list:  # noqa: ANN001
-    """Outflows only, transfers excluded, always scoped to one user."""
+def _spend_conditions(  # noqa: ANN001
+    user_id, start: date, end: date, currency: str
+) -> list:
+    """Outflows only, transfers excluded, one user, one currency.
+
+    The currency term is here rather than at each call site for the same reason
+    user_id is: a total that mixes currencies would be meaningless, and Ledger
+    AI does not convert.
+    """
     return [
         Transaction.user_id == user_id,
+        Transaction.currency == currency,
         Transaction.posted_date >= start,
         Transaction.posted_date <= end,
         Transaction.amount_cents < 0,
@@ -97,11 +137,14 @@ def _with_category(stmt: Select) -> Select:
 
 @router.get("", response_model=DashboardOut)
 async def get_dashboard(user: CurrentUser, session: DbSession) -> DashboardOut:
+    base_currency = user.base_currency
     bounds = (
         await session.execute(
             select(
                 func.min(Transaction.posted_date), func.max(Transaction.posted_date)
-            ).where(Transaction.user_id == user.id)
+            ).where(
+                Transaction.user_id == user.id, Transaction.currency == base_currency
+            )
         )
     ).one()
     earliest, latest = bounds[0], bounds[1]
@@ -120,7 +163,7 @@ async def get_dashboard(user: CurrentUser, session: DbSession) -> DashboardOut:
                     func.coalesce(func.sum(func.abs(Transaction.amount_cents)), 0),
                     func.count(Transaction.id),
                 )
-            ).where(*_spend_conditions(user.id, current_start, current_end))
+            ).where(*_spend_conditions(user.id, current_start, current_end, base_currency))
         )
     ).one()
 
@@ -128,7 +171,7 @@ async def get_dashboard(user: CurrentUser, session: DbSession) -> DashboardOut:
         await session.execute(
             _with_category(
                 select(func.coalesce(func.sum(func.abs(Transaction.amount_cents)), 0))
-            ).where(*_spend_conditions(user.id, previous_start, previous_end))
+            ).where(*_spend_conditions(user.id, previous_start, previous_end, base_currency))
         )
     ).scalar_one()
 
@@ -136,6 +179,7 @@ async def get_dashboard(user: CurrentUser, session: DbSession) -> DashboardOut:
         await session.execute(
             select(func.coalesce(func.sum(Transaction.amount_cents), 0)).where(
                 Transaction.user_id == user.id,
+                Transaction.currency == base_currency,
                 Transaction.amount_cents > 0,
                 Transaction.posted_date >= current_start,
                 Transaction.posted_date <= current_end,
@@ -154,7 +198,7 @@ async def get_dashboard(user: CurrentUser, session: DbSession) -> DashboardOut:
                     func.count(Transaction.id).label("n"),
                 )
             )
-            .where(*_spend_conditions(user.id, current_start, current_end))
+            .where(*_spend_conditions(user.id, current_start, current_end, base_currency))
             .group_by("label", "slug", "color")
             .order_by(func.sum(func.abs(Transaction.amount_cents)).desc())
         )
@@ -173,7 +217,7 @@ async def get_dashboard(user: CurrentUser, session: DbSession) -> DashboardOut:
                     func.sum(func.abs(Transaction.amount_cents)).label("value"),
                 )
             )
-            .where(*_spend_conditions(user.id, trend_start, current_end))
+            .where(*_spend_conditions(user.id, trend_start, current_end, base_currency))
             .group_by("month")
             .order_by("month")
         )
@@ -205,6 +249,61 @@ async def get_dashboard(user: CurrentUser, session: DbSession) -> DashboardOut:
             )
         )
     ).scalar_one()
+
+    # --- alerts ------------------------------------------------------------
+    alert_rows = (
+        await session.execute(
+            select(Alert, Transaction)
+            .join(Transaction, Alert.transaction_id == Transaction.id)
+            .where(Alert.user_id == user.id, Alert.status == AlertStatus.OPEN)
+            .order_by(
+                case(
+                    (Alert.severity == AlertSeverity.HIGH, 0),
+                    (Alert.severity == AlertSeverity.MEDIUM, 1),
+                    else_=2,
+                ),
+                Transaction.posted_date.desc(),
+            )
+            .limit(DASHBOARD_ALERT_LIMIT)
+        )
+    ).all()
+
+    open_alert_count = (
+        await session.execute(
+            select(func.count(Alert.id)).where(
+                Alert.user_id == user.id, Alert.status == AlertStatus.OPEN
+            )
+        )
+    ).scalar_one()
+
+    pending_receipts = (
+        await session.execute(
+            select(func.count(Receipt.id)).where(
+                Receipt.user_id == user.id,
+                Receipt.status.in_([ReceiptStatus.PENDING, ReceiptStatus.NEEDS_REVIEW]),
+            )
+        )
+    ).scalar_one()
+
+    # --- currencies this view deliberately leaves out ----------------------
+    other_currency_rows = (
+        await session.execute(
+            select(Transaction.currency, func.count(Transaction.id))
+            .where(
+                Transaction.user_id == user.id,
+                Transaction.currency != base_currency,
+            )
+            .group_by(Transaction.currency)
+        )
+    ).all()
+    excluded = {row[0]: int(row[1]) for row in other_currency_rows}
+    currency_note = None
+    if excluded:
+        summary = ", ".join(f"{count} in {code}" for code, count in sorted(excluded.items()))
+        currency_note = (
+            f"Totals cover {base_currency} only. {summary} not included — Ledger AI "
+            "does not convert between currencies."
+        )
 
     account_count = (
         await session.execute(
@@ -270,6 +369,28 @@ async def get_dashboard(user: CurrentUser, session: DbSession) -> DashboardOut:
         account_count=account_count,
         earliest_transaction=earliest,
         latest_transaction=latest,
+        base_currency=base_currency,
+        excluded_currencies=excluded,
+        currency_note=currency_note,
+        pending_receipt_count=pending_receipts,
+        open_alert_count=open_alert_count,
+        alerts=[
+            AlertOut(
+                id=str(alert.id),
+                alert_type=alert.alert_type,
+                severity=alert.severity,
+                severity_note=SEVERITY_INTENT.get(AlertSeverity(alert.severity), ""),
+                message=alert.message,
+                status=alert.status,
+                evidence=alert.evidence,
+                created_at=alert.created_at,
+                transaction_id=str(transaction.id),
+                transaction_merchant=transaction.merchant,
+                transaction_date=transaction.posted_date,
+                transaction_amount=round(transaction.amount_cents / 100, 2),
+            )
+            for alert, transaction in alert_rows
+        ],
     )
 
 

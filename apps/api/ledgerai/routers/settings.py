@@ -88,21 +88,39 @@ async def profile(user: CurrentUser, session: DbSession) -> ProfileOut:
             ),
             FeatureStatus(
                 key="receipt_ocr",
-                label="Receipt image OCR",
-                available=False,
-                note="Planned for Phase 2 (Tesseract).",
+                label="Receipt OCR (JPEG, PNG, PDF)",
+                available=True,
+                note=(
+                    "Available now, using Tesseract locally. English only; "
+                    "handwritten receipts are out of scope."
+                ),
             ),
             FeatureStatus(
                 key="alerts",
                 label="Duplicate and unusual-charge alerts",
+                available=True,
+                note=(
+                    "Available now. These are statistical observations about your own "
+                    "data, not fraud detection."
+                ),
+            ),
+            FeatureStatus(
+                key="currency_conversion",
+                label="Currency conversion",
                 available=False,
-                note="Planned for Phase 2.",
+                note=(
+                    "Not implemented. Amounts in other currencies are reported "
+                    "separately and never added to your base-currency totals."
+                ),
             ),
             FeatureStatus(
                 key="export",
                 label="Data export and deletion",
                 available=False,
-                note="Planned for Phase 3.",
+                note=(
+                    "Planned for Phase 3. Deleting a receipt and purging its stored "
+                    "original from object storage is part of that work."
+                ),
             ),
             FeatureStatus(
                 key="connected_accounts",

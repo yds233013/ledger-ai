@@ -6,7 +6,7 @@ import { cn } from '@/lib/cn';
 import { formatBytes } from '@/lib/format';
 
 const MAX_BYTES = 10 * 1024 * 1024;
-const ACCEPTED = '.csv,.txt,.png,.jpg,.jpeg,.webp';
+const ACCEPTED = '.csv,.txt,.png,.jpg,.jpeg,.webp,.pdf';
 
 /** Client-side pre-check. The server validates independently and is the
  *  authority — this only saves the user a round trip. */
@@ -16,10 +16,12 @@ function preValidate(file: File): string | null {
     return `${formatBytes(file.size)} exceeds the 10 MB limit.`;
   }
   const name = file.name.toLowerCase();
-  const ok = ['.csv', '.txt', '.png', '.jpg', '.jpeg', '.webp'].some((ext) =>
+  const ok = ['.csv', '.txt', '.png', '.jpg', '.jpeg', '.webp', '.pdf'].some((ext) =>
     name.endsWith(ext),
   );
-  if (!ok) return 'Only .csv statements and .png/.jpg/.webp receipt images are accepted.';
+  if (!ok) {
+    return 'Only .csv statements and .png/.jpg/.webp/.pdf receipts are accepted.';
+  }
   return null;
 }
 
@@ -86,10 +88,10 @@ export function Dropzone({
           ⬆
         </span>
         <p className="mt-3 text-sm font-medium text-ink">
-          Drop a CSV statement here, or click to choose
+          Drop a CSV statement or a receipt here, or click to choose
         </p>
         <p className="mt-1 text-xs text-ink-muted">
-          CSV up to 10 MB. Receipt images are accepted but OCR arrives in Phase 2.
+          CSV statements and JPEG, PNG or PDF receipts, up to 10 MB.
         </p>
       </div>
 

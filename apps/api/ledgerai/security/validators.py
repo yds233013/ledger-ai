@@ -18,6 +18,16 @@ from ..models import UploadKind
 ALLOWED_CSV_EXTENSIONS = {".csv", ".txt"}
 ALLOWED_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
 ALLOWED_IMAGE_MIME = {"image/png", "image/jpeg", "image/webp"}
+ALLOWED_RECEIPT_MIME = ALLOWED_IMAGE_MIME | {"application/pdf"}
+
+# Responses for stored receipts use this fixed allow-list rather than echoing
+# whatever content type the upload claimed.
+SAFE_RESPONSE_CONTENT_TYPES = {
+    "image/png": "image/png",
+    "image/jpeg": "image/jpeg",
+    "image/webp": "image/webp",
+    "application/pdf": "application/pdf",
+}
 
 # The CSV must expose a date, a description and an amount. Everything else is
 # optional. Header matching is case/space/underscore-insensitive.
@@ -48,6 +58,10 @@ def normalize_header(name: str) -> str:
 def detect_kind(filename: str, data: bytes) -> tuple[UploadKind, str]:
     """Classify by sniffed content first, extension second."""
     kind_guess = filetype.guess(data)
+
+    if kind_guess is not None and kind_guess.mime == "application/pdf":
+        return UploadKind.IMAGE, "application/pdf"
+
     if kind_guess is not None and kind_guess.mime.startswith("image/"):
         if kind_guess.mime not in ALLOWED_IMAGE_MIME:
             raise ValidationError(f"Unsupported image type: {kind_guess.mime}")
@@ -57,11 +71,20 @@ def detect_kind(filename: str, data: bytes) -> tuple[UploadKind, str]:
     if any(lowered.endswith(ext) for ext in ALLOWED_IMAGE_EXTENSIONS):
         # Extension claims an image but the bytes are not one.
         raise ValidationError("File extension says image but the content is not a valid image")
+    if lowered.endswith(".pdf"):
+        raise ValidationError("File extension says PDF but the content is not a valid PDF")
 
     if any(lowered.endswith(ext) for ext in ALLOWED_CSV_EXTENSIONS):
         return UploadKind.CSV, "text/csv"
 
-    raise ValidationError("Only .csv statements and .png/.jpg/.webp receipt images are accepted")
+    raise ValidationError(
+        "Only .csv statements and .png/.jpg/.webp/.pdf receipts are accepted"
+    )
+
+
+def safe_response_content_type(stored_content_type: str) -> str:
+    """Never echo an upload's claimed content type back to a browser."""
+    return SAFE_RESPONSE_CONTENT_TYPES.get(stored_content_type, "application/octet-stream")
 
 
 def validate_size(size_bytes: int) -> None:

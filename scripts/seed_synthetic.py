@@ -43,6 +43,7 @@ from ledgerai.models import (  # noqa: E402
     User,
 )
 from ledgerai.security.passwords import hash_password  # noqa: E402
+from ledgerai.services.alerts import analyze_user  # noqa: E402
 from ledgerai.services.categorize import (  # noqa: E402
     CategorizationContext,
     RuleCategorizer,
@@ -134,7 +135,11 @@ def build_transactions(rng: random.Random, today: date) -> list[dict]:
     for month_start in starts:
         days_in_month = ((month_start.replace(day=28) + timedelta(days=4)).replace(day=1)
                          - month_start).days
-        last_day = min(days_in_month, (today - month_start).days + 1) if month_start.month == today.month and month_start.year == today.year else days_in_month
+        last_day = (
+            min(days_in_month, (today - month_start).days + 1)
+            if month_start.month == today.month and month_start.year == today.year
+            else days_in_month
+        )
         if last_day <= 0:
             continue
 
@@ -230,6 +235,12 @@ def build_transactions(rng: random.Random, today: date) -> list[dict]:
                  "description": "MONTHLY MAINTENANCE FEE",
                  "cents": -1200, "account": 0})
 
+    # A euro purchase. Ledger AI does not convert currencies, so this exists to
+    # make the exclusion disclosure visible in the demo rather than theoretical.
+    rows.append({"date": recent + timedelta(days=10),
+                 "description": "SANDBOX BOOKS EU",
+                 "cents": -3291, "account": 1, "currency": "EUR"})
+
     return rows
 
 
@@ -261,7 +272,7 @@ def seed(reset: bool = False) -> None:
             session.execute(statement)
 
         # --- merchant rules ------------------------------------------------
-        for priority, (pattern, slug) in enumerate(load_merchant_rule_definitions()):
+        for pattern, slug in load_merchant_rule_definitions():
             session.execute(
                 pg_insert(MerchantRule)
                 .values(
@@ -365,7 +376,7 @@ def seed(reset: bool = False) -> None:
                 "upload_id": None,
                 "posted_date": row["date"],
                 "amount_cents": row["cents"],
-                "currency": "USD",
+                "currency": row.get("currency", "USD"),
                 "raw_description": description,
                 "normalized_description": normalized,
                 "merchant": merchant,
@@ -387,6 +398,12 @@ def seed(reset: bool = False) -> None:
             .on_conflict_do_nothing(index_elements=["dedupe_hash"])
         )
 
+        session.flush()
+
+        # Run duplicate and unusual-charge detection so the demo dataset has a
+        # populated alerts surface rather than an empty panel.
+        alerts_created = analyze_user(session, user.id)
+
         spend = sum(-p["amount_cents"] for p in payloads if p["amount_cents"] < 0)
         income = sum(p["amount_cents"] for p in payloads if p["amount_cents"] > 0)
         print(f"""
@@ -395,6 +412,7 @@ Seeded synthetic demo data
   accounts    : {len(accounts)}
   transactions: {len(payloads)}  over {MONTHS_OF_HISTORY} months
   needs review: {review_count}
+  alerts      : {alerts_created}
   gross spend : ${spend / 100:,.2f}   (synthetic)
   gross income: ${income / 100:,.2f}   (synthetic)
 

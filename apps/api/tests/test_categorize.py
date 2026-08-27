@@ -108,8 +108,30 @@ def test_default_engine_needs_no_api_key(monkeypatch: pytest.MonkeyPatch) -> Non
     assert isinstance(build_categorizer(), RuleCategorizer)
 
 
-def test_llm_categorizer_cannot_be_constructed_in_phase_1() -> None:
-    from ledgerai.services.categorize.llm import LLMCategorizer
+def test_ai_branch_is_never_taken_without_a_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The AI categorizer exists now, but a missing key must still yield the
+    deterministic engine — the app is fully functional with no key."""
+    from ledgerai.config import settings
+    from ledgerai.services.ai import reset_ai_client
 
-    with pytest.raises(NotImplementedError):
-        LLMCategorizer()
+    monkeypatch.setattr(settings, "ai_enabled", True)
+    monkeypatch.setattr(settings, "openai_api_key", "")
+    reset_ai_client(None)
+    assert isinstance(build_categorizer(["groceries"]), RuleCategorizer)
+
+
+def test_redaction_still_sends_only_the_merchant_name() -> None:
+    from datetime import date as _date
+
+    from ledgerai.services.categorize.llm import redact_for_model
+
+    payload = redact_for_model(
+        TransactionCandidate(
+            merchant="Blue Bottle Coffee",
+            merchant_key="blue bottle coffee",
+            normalized_description="blue bottle coffee austin tx",
+            amount_cents=-725,
+            posted_date=_date(2026, 3, 1),
+        )
+    )
+    assert payload == {"merchant": "Blue Bottle Coffee"}

@@ -128,6 +128,10 @@ class AnalysisPlan(BaseModel):
 
     intent: Intent
     direction: Direction = Direction.SPEND
+    # Ledger AI does not convert between currencies, so every aggregate is
+    # restricted to exactly one. Mixing them would produce a number that means
+    # nothing.
+    currency: str = Field(default="USD", min_length=3, max_length=3)
     date_range: DateRange
     compare_to: DateRange | None = None
     filters: Filters = Field(default_factory=Filters)
@@ -169,6 +173,7 @@ class AnalysisPlan(BaseModel):
         if self.group_by:
             parts.append(f"grouped by {self.group_by.value}")
         parts.append(f"for {self.date_range.label}")
+        parts.append(f"in {self.currency}")
         if self.compare_to:
             parts.append(f"compared with {self.compare_to.label}")
         return " ".join(parts)

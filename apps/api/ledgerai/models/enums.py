@@ -30,6 +30,7 @@ class JobStage(StrEnum):
     EXTRACTING = "extracting"
     NORMALIZING = "normalizing"
     CATEGORIZING = "categorizing"
+    ANALYZING = "analyzing"
     COMPLETE = "complete"
     FAILED = "failed"
 
@@ -39,6 +40,7 @@ JOB_STAGE_ORDER: list[JobStage] = [
     JobStage.EXTRACTING,
     JobStage.NORMALIZING,
     JobStage.CATEGORIZING,
+    JobStage.ANALYZING,
     JobStage.COMPLETE,
 ]
 
@@ -65,6 +67,7 @@ class AlertType(StrEnum):
     NEAR_DUPLICATE = "near_duplicate"
     UNUSUAL_AMOUNT = "unusual_amount"
     NEW_MERCHANT = "new_merchant"
+    LARGE_FOR_MERCHANT = "large_for_merchant"
 
 
 class AlertSeverity(StrEnum):
@@ -77,6 +80,23 @@ class AlertStatus(StrEnum):
     OPEN = "open"
     DISMISSED = "dismissed"
     RESOLVED = "resolved"
+
+
+class ReceiptStatus(StrEnum):
+    """A receipt never becomes a transaction on its own — confirming is an
+    explicit user action, so `needs_review` is a resting state, not an error."""
+
+    PENDING = "pending"
+    NEEDS_REVIEW = "needs_review"
+    CONFIRMED = "confirmed"
+    FAILED = "failed"
+
+
+class ReceiptLinkMode(StrEnum):
+    """How a confirmed receipt produced its transaction."""
+
+    CREATED = "created"   # a new transaction was created from the receipt
+    LINKED = "linked"     # the receipt was attached to an existing transaction
 
 
 class AnalysisStatus(StrEnum):

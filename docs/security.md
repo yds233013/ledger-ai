@@ -42,7 +42,19 @@ RS256/JWKS so the verifier no longer holds the signing key.
 placeholders are committed. `AUTH_SECRET` must be identical in the repo-root
 `.env` and `apps/web/.env.local`.
 
-## Known limitations (Phase 1)
+## Receipt handling
+
+| Control | Implementation |
+|---|---|
+| Serving | `GET /api/receipts/{id}/image` requires authentication and is owner-scoped (404 otherwise). No public or pre-signed URL exists. |
+| Content type | Taken from a fixed allow-list, never echoed from the upload's claim. |
+| Headers | `X-Content-Type-Options: nosniff`, `Cache-Control: private, no-store`, `Content-Disposition: inline` with a sanitized filename, `Referrer-Policy: no-referrer`, and a `default-src 'none'; sandbox` CSP. |
+| PDFs | Rasterized server-side to PNG for preview, so a browser is never asked to render an untrusted PDF. |
+| Decompression bombs | `Image.MAX_IMAGE_PIXELS` set explicitly; dimensions and pixel count checked before a full decode; PDFs capped at 5 pages. |
+| EXIF | Images are re-encoded to grayscale PNG before OCR, which strips EXIF — receipt photos routinely carry GPS coordinates. |
+| Logging | No raw OCR text, extracted financial fields, storage keys or tokens reach the logs. Receipt logging carries ids, page counts and status only, asserted by test. |
+
+## Known limitations
 
 - No rate limiting on login or analysis endpoints.
 - No CSRF token on the API; it relies on bearer auth plus a CORS allowlist
@@ -51,4 +63,8 @@ placeholders are committed. `AUTH_SECRET` must be identical in the repo-root
 - No audit log beyond `transaction_corrections`.
 - Uploaded files are stored unencrypted at rest in MinIO. A production
   deployment would enable bucket encryption.
-- Data export and deletion are not implemented (Phase 3).
+- Data export and deletion are not implemented (Phase 3). **Deleting a receipt
+  and purging its stored original from object storage is part of that work** —
+  in Phase 2 a receipt's file stays in storage for the life of the account.
+- No FX conversion; mixed-currency totals are restricted and disclosed rather
+  than converted.

@@ -14,16 +14,29 @@ from __future__ import annotations
 import logging
 import uuid
 from datetime import UTC, datetime
+from decimal import Decimal
 
 from rq import get_current_job
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..db import sync_session
-from ..models import JobStage, ProcessingJob, Upload, UploadStatus
+from ..models import (
+    JobStage,
+    ProcessingJob,
+    Receipt,
+    ReceiptStatus,
+    Upload,
+    UploadKind,
+    UploadStatus,
+)
 from ..security.validators import ValidationError
+from ..services.alerts import analyze_upload
 from ..services.categorize import build_categorizer
 from ..services.csv_parser import parse_statement_csv
 from ..services.ingest import build_context, ingest_rows, resolve_account, resolve_category_ids
+from ..services.ocr import build_engine, parse_receipt
+from ..services.ocr.preprocess import load_pages, prepare_for_ocr
 from ..services.storage import get_storage
 
 logger = logging.getLogger(__name__)
@@ -32,8 +45,9 @@ logger = logging.getLogger(__name__)
 STAGE_PROGRESS: dict[JobStage, int] = {
     JobStage.QUEUED: 0,
     JobStage.EXTRACTING: 20,
-    JobStage.NORMALIZING: 50,
-    JobStage.CATEGORIZING: 75,
+    JobStage.NORMALIZING: 45,
+    JobStage.CATEGORIZING: 65,
+    JobStage.ANALYZING: 85,
     JobStage.COMPLETE: 100,
 }
 
@@ -100,13 +114,8 @@ def process_upload(upload_id: str, job_id: str) -> dict[str, int | str]:
             # --- extract -----------------------------------------------------
             data = get_storage().get(upload.storage_key)
 
-            if upload.kind == "image":
-                # Receipt OCR is Phase 2. Fail loudly and specifically rather
-                # than silently importing nothing.
-                raise ValidationError(
-                    "Receipt image processing (Tesseract OCR) ships in Phase 2. "
-                    "Upload a CSV bank statement to import transactions today."
-                )
+            if upload.kind == UploadKind.IMAGE:
+                return _process_receipt(session, job, upload, data)
 
             parsed = parse_statement_csv(data)
             _set_stage(session, job, JobStage.NORMALIZING, rows_total=parsed.total_rows)
@@ -128,10 +137,14 @@ def process_upload(upload_id: str, job_id: str) -> dict[str, int | str]:
                 account_id=account.id,
                 upload_id=upload.id,
                 rows=parsed.rows,
-                categorizer=build_categorizer(),
+                categorizer=build_categorizer(list(category_ids)),
                 context=context,
                 category_ids=category_ids,
             )
+
+            # --- detect duplicates and unusual charges -----------------------
+            _set_stage(session, job, JobStage.ANALYZING)
+            alerts_created = analyze_upload(session, upload.user_id, upload.id)
 
             upload.status = UploadStatus.COMPLETE
             _set_stage(
@@ -145,18 +158,20 @@ def process_upload(upload_id: str, job_id: str) -> dict[str, int | str]:
             )
 
             logger.info(
-                "Upload %s: imported=%d duplicates=%d unparseable=%d review=%d",
+                "Upload %s: imported=%d duplicates=%d unparseable=%d review=%d alerts=%d",
                 upload_id,
                 result.imported,
                 result.skipped_duplicates,
                 len(parsed.errors),
                 result.needs_review,
+                alerts_created,
             )
             return {
                 "imported": result.imported,
                 "duplicates": result.skipped_duplicates,
                 "unparseable": len(parsed.errors),
                 "needs_review": result.needs_review,
+                "alerts": alerts_created,
                 "account": account.name,
             }
 
@@ -178,6 +193,77 @@ def process_upload(upload_id: str, job_id: str) -> dict[str, int | str]:
                 )
             logger.exception("Upload %s failed", upload_id)
             raise
+
+
+def _process_receipt(
+    session: Session, job: ProcessingJob, upload: Upload, data: bytes
+) -> dict[str, int | str]:
+    """OCR a receipt into structured fields.
+
+    Deliberately creates no transaction: a receipt is inert until the user
+    confirms it on the review page. Logging here carries only ids, page counts
+    and status — never OCR text, merchant names or amounts.
+    """
+    pages = load_pages(data, upload.content_type)
+    prepared = [prepare_for_ocr(page) for page in pages]
+
+    result = build_engine().extract(prepared)
+    _set_stage(session, job, JobStage.NORMALIZING, rows_total=1)
+
+    parsed = parse_receipt(result)
+    _set_stage(session, job, JobStage.CATEGORIZING)
+
+    status = ReceiptStatus.NEEDS_REVIEW if parsed.needs_review else ReceiptStatus.PENDING
+
+    # upload_id is UNIQUE, so a retried job updates the existing row rather
+    # than creating a second receipt for the same file.
+    receipt = session.execute(
+        select(Receipt).where(Receipt.upload_id == upload.id)
+    ).scalar_one_or_none()
+    if receipt is None:
+        receipt = Receipt(user_id=upload.user_id, upload_id=upload.id)
+        session.add(receipt)
+
+    receipt.status = status
+    receipt.page_count = result.page_count
+    receipt.ocr_engine = result.engine
+    receipt.ocr_confidence = Decimal(str(round(result.mean_confidence, 3)))
+    receipt.raw_text = result.text[:20_000]
+    receipt.merchant = parsed.merchant
+    receipt.posted_date = parsed.posted_date
+    receipt.subtotal_cents = parsed.subtotal_cents
+    receipt.tax_cents = parsed.tax_cents
+    receipt.tip_cents = parsed.tip_cents
+    receipt.total_cents = parsed.total_cents
+    receipt.currency = parsed.currency
+    receipt.field_confidence = parsed.field_confidence
+    receipt.parse_notes = parsed.notes
+    session.flush()
+
+    _set_stage(session, job, JobStage.ANALYZING)
+
+    upload.status = UploadStatus.COMPLETE
+    _set_stage(
+        session,
+        job,
+        JobStage.COMPLETE,
+        rows_imported=0,
+        rows_skipped=0,
+        finished_at=datetime.now(UTC),
+    )
+
+    logger.info(
+        "Receipt %s processed: pages=%d status=%s",
+        receipt.id,
+        result.page_count,
+        status.value,
+    )
+    return {
+        "receipt_id": str(receipt.id),
+        "pages": result.page_count,
+        "status": status.value,
+        "needs_review": int(parsed.needs_review),
+    }
 
 
 def _dominant_hint(parsed) -> str | None:  # noqa: ANN001 - ParseResult, avoids a cycle

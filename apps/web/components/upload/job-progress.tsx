@@ -9,7 +9,8 @@ const STAGES: { key: JobStage; label: string; detail: string }[] = [
   { key: 'extracting', label: 'Extracting', detail: 'Reading rows from the file' },
   { key: 'normalizing', label: 'Normalizing', detail: 'Parsing dates, amounts and merchants' },
   { key: 'categorizing', label: 'Categorizing', detail: 'Applying rules and your corrections' },
-  { key: 'complete', label: 'Complete', detail: 'Transactions imported' },
+  { key: 'analyzing', label: 'Analyzing', detail: 'Checking for duplicates and unusual charges' },
+  { key: 'complete', label: 'Complete', detail: 'Finished' },
 ];
 
 function stageIndex(stage: JobStage): number {

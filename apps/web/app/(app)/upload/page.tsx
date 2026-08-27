@@ -87,8 +87,8 @@ export default function UploadPage() {
       <header>
         <h1 className="text-xl font-semibold tracking-tight">Upload</h1>
         <p className="mt-1 text-sm text-ink-muted">
-          Import a CSV bank statement. Uploading the same file twice never creates duplicate
-          transactions.
+          Import a CSV bank statement, or a receipt to read with OCR. Uploading the same
+          file twice never creates duplicate transactions.
         </p>
       </header>
 
@@ -137,9 +137,14 @@ export default function UploadPage() {
         <CardHeader
           title="Upload history"
           action={
-            <Link href="/transactions" className="text-xs font-medium text-brand hover:underline">
-              View transactions
-            </Link>
+            <span className="flex gap-3">
+              <Link href="/receipts" className="text-xs font-medium text-brand hover:underline">
+                Review receipts
+              </Link>
+              <Link href="/transactions" className="text-xs font-medium text-brand hover:underline">
+                View transactions
+              </Link>
+            </span>
           }
         />
 

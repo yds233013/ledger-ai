@@ -1,6 +1,6 @@
 # Data model
 
-Eleven tables. Every user-owned table carries `user_id` with an index, and every
+Thirteen tables. Every user-owned table carries `user_id` with an index, and every
 read goes through `services/scoping.py` so the ownership predicate lives in one
 place.
 
@@ -15,11 +15,19 @@ place.
 ## Tables
 
 ### `users`
-`id` · `email` (unique) · `password_hash` (bcrypt) · `display_name` · `is_demo`
+`id` · `email` (unique) · `password_hash` (bcrypt) · `display_name` · `is_demo` ·
+`base_currency`.
+
+`base_currency` is what every aggregate is restricted to. Ledger AI does not
+convert between currencies, so a total that mixed them would be meaningless.
 
 ### `accounts`
 Synthetic bank/card accounts. `user_id` · `name` · `institution` ·
-`account_type` · `mask` · `currency`. Unique on `(user_id, name)`.
+`account_type` · `mask` · `currency` · `is_synthetic`. Unique on `(user_id, name)`.
+
+`is_synthetic` marks the `Cash / Receipt Purchases` holding account. A
+receipt-created transaction is never silently attached to a real bank account,
+so the fallback destination has to be visibly distinct.
 
 ### `categories`
 System categories have `user_id IS NULL`; user categories are scoped.
@@ -79,10 +87,37 @@ safe. A row carrying an **individual** correction is excluded from every later
 transaction to something different, a subsequent bulk change must not silently
 undo that decision.
 
-### `alerts` *(Phase 2)*
-`alert_type` (duplicate | near_duplicate | unusual_amount | new_merchant) ·
-`severity` · `message` · `evidence JSONB` · `status`.
-Unique on `(transaction_id, alert_type)`.
+### `receipts`
+One row per uploaded receipt. `upload_id` is **UNIQUE**, so a retried job cannot
+produce a second receipt for the same file.
+
+`status` (`pending` / `needs_review` / `confirmed` / `failed`) ·
+`transaction_id` (set on confirm) · `link_mode` (`created` / `linked`) ·
+`page_count` · `ocr_engine` · `ocr_confidence` · `raw_text` ·
+`merchant` · `posted_date` · `subtotal_cents` · `tax_cents` · `tip_cents` ·
+`total_cents` · `currency` · `field_confidence JSONB` · `parse_notes JSONB`.
+
+**Extracted money stays positive here.** The receipt keeps what was printed on
+it; the outflow sign is applied once, when the transaction is created. A $30.36
+receipt produces a transaction with `amount_cents = -3036`.
+
+`field_confidence` is JSONB rather than a column per field, so adding a field
+later is not a migration.
+
+### `receipt_match_rejections`
+`receipt_id` · `transaction_id` · `user_id`, unique on the first two. A
+suggestion the user dismissed does not come back — persisted rather than held in
+session state so it survives a reload.
+
+### `alerts`
+`alert_type` (duplicate | near_duplicate | unusual_amount | new_merchant |
+large_for_merchant) · `severity` · `message` · `evidence JSONB` · `status`.
+Unique on `(transaction_id, alert_type)`, which makes re-running detection free.
+
+`severity` doubles as the presentation contract: `high` for both duplicate
+kinds, `medium` for unusual amounts and merchant outliers, `low` for first-time
+merchants. `evidence` carries the median, MAD, sample size and threshold that
+produced the alert, so it can be audited rather than believed.
 
 ### `analysis_runs`
 `question` · `normalized_question` · `plan JSONB` · `planner` · `narrator` ·

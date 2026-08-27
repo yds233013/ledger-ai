@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useEffect, useRef } from 'react';
 
 import { Answer } from '@/components/ask/answer';
+import { RefinementChips } from '@/components/ask/refinement-chips';
 import { STEP_ORDER, StepCard } from '@/components/ask/step-card';
 import { useAnalysis } from '@/components/ask/use-analysis';
 import { AiBadge, Badge, Card, EmptyState, ErrorState, Spinner } from '@/components/ui/primitives';
@@ -35,6 +36,17 @@ export default function AskPage() {
     setDraft(trimmed);
     void ask(trimmed);
     inputRef.current?.blur();
+  }
+
+  /** A follow-up refines the plan that produced the current answer. */
+  function refine(chipKey: string, chipLabel: string) {
+    if (streaming || !state.result?.run_id) return;
+    setDraft(chipLabel);
+    void ask(chipLabel, {
+      refineFromRunId: state.result.run_id,
+      refinement: chipKey,
+      useCache: true,
+    });
   }
 
   return (
@@ -202,7 +214,21 @@ export default function AskPage() {
                 />
               </Card>
             ) : state.result ? (
-              <Answer result={state.result} aiEnabled={capabilities.data?.ai_enabled ?? false} />
+              <div className="space-y-4">
+                <Answer
+                  result={state.result}
+                  aiEnabled={capabilities.data?.ai_enabled ?? false}
+                />
+                {state.result.refinements?.length ? (
+                  <Card className="p-4">
+                    <RefinementChips
+                      chips={state.result.refinements}
+                      disabled={streaming}
+                      onRefine={(chip) => refine(chip.key, chip.label)}
+                    />
+                  </Card>
+                ) : null}
+              </div>
             ) : (
               <Card>
                 <div className="flex items-center gap-3 px-6 py-14">

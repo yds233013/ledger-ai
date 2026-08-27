@@ -47,6 +47,8 @@ from .enums import (
     JobStage,
     NarratorKind,
     PlannerKind,
+    ReceiptLinkMode,
+    ReceiptStatus,
     StepStatus,
     UploadKind,
     UploadStatus,
@@ -61,6 +63,9 @@ class User(Base, TimestampMixin):
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     display_name: Mapped[str] = mapped_column(String(120), nullable=False)
     is_demo: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # Ledger AI does not convert between currencies. Aggregates are restricted
+    # to this currency and anything else is disclosed, never silently summed.
+    base_currency: Mapped[str] = mapped_column(String(3), default="USD", nullable=False)
 
     accounts: Mapped[list[Account]] = relationship(
         back_populates="user", cascade="all, delete-orphan"
@@ -81,6 +86,10 @@ class Account(Base, TimestampMixin):
     account_type: Mapped[str] = mapped_column(String(32), nullable=False)  # checking|credit|savings
     mask: Mapped[str] = mapped_column(String(4), nullable=False)
     currency: Mapped[str] = mapped_column(String(3), default="USD", nullable=False)
+    # True for the "Cash / Receipt Purchases" holding account. A receipt-created
+    # transaction is never silently attached to a real bank account, so the
+    # fallback destination has to be visibly distinct.
+    is_synthetic: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     user: Mapped[User] = relationship(back_populates="accounts")
 
@@ -269,6 +278,88 @@ class Alert(Base, TimestampMixin):
     __table_args__ = (
         Index("ix_alerts_user_status", "user_id", "status"),
         UniqueConstraint("transaction_id", "alert_type", name="uq_alerts_tx_type"),
+    )
+
+
+class Receipt(Base, TimestampMixin):
+    """One uploaded receipt and everything OCR extracted from it.
+
+    A receipt is inert until confirmed: it holds extracted values but owns no
+    transaction. `upload_id` is UNIQUE, so a retried job cannot produce a
+    second receipt for the same file.
+    """
+
+    __tablename__ = "receipts"
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    upload_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("uploads.id", ondelete="CASCADE"), nullable=False, unique=True
+    )
+    transaction_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("transactions.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    link_mode: Mapped[ReceiptLinkMode | None] = mapped_column(String(10), nullable=True)
+    status: Mapped[ReceiptStatus] = mapped_column(
+        String(16), default=ReceiptStatus.PENDING, nullable=False
+    )
+
+    page_count: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    ocr_engine: Mapped[str] = mapped_column(String(40), default="tesseract", nullable=False)
+    # Mean per-word confidence across the whole document, 0.00–1.00.
+    ocr_confidence: Mapped[Decimal] = mapped_column(Numeric(4, 3), default=0, nullable=False)
+    raw_text: Mapped[str] = mapped_column(Text, default="", nullable=False)
+
+    merchant: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    posted_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    # Extracted values stay POSITIVE here. The outflow sign is applied when the
+    # transaction is created, so the receipt keeps what was printed on it.
+    subtotal_cents: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    tax_cents: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    tip_cents: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    total_cents: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    currency: Mapped[str] = mapped_column(String(3), default="USD", nullable=False)
+
+    # {field: 0.0-1.0} rather than a column per field, so adding a field later
+    # is not a migration.
+    field_confidence: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+    parse_notes: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+
+    upload: Mapped[Upload] = relationship()
+
+    __table_args__ = (
+        Index("ix_receipts_user_status", "user_id", "status"),
+        CheckConstraint(
+            "ocr_confidence >= 0 AND ocr_confidence <= 1", name="ck_receipts_conf_range"
+        ),
+    )
+
+
+class ReceiptMatchRejection(Base, TimestampMixin):
+    """A candidate the user rejected for this receipt.
+
+    Persisted rather than held in session state: a rejected suggestion should
+    not reappear after a page reload, and persistence is simpler to reason
+    about than client-side state that has to survive navigation.
+    """
+
+    __tablename__ = "receipt_match_rejections"
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    receipt_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("receipts.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    transaction_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("transactions.id", ondelete="CASCADE"), nullable=False
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+
+    __table_args__ = (
+        UniqueConstraint("receipt_id", "transaction_id", name="uq_receipt_rejection"),
     )
 
 

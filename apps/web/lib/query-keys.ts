@@ -13,4 +13,10 @@ export const queryKeys = {
   capabilities: ['capabilities'] as const,
   analysisRuns: ['analysis-runs'] as const,
   profile: ['profile'] as const,
+  receipts: (statusFilter?: string) => ['receipts', statusFilter ?? 'all'] as const,
+  receiptsAll: ['receipts'] as const,
+  receipt: (id: string) => ['receipt', id] as const,
+  matchCandidates: (id: string) => ['match-candidates', id] as const,
+  alerts: (statusFilter: string) => ['alerts', statusFilter] as const,
+  alertsAll: ['alerts'] as const,
 };

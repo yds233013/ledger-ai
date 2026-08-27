@@ -73,6 +73,7 @@ export type JobStage =
   | 'extracting'
   | 'normalizing'
   | 'categorizing'
+  | 'analyzing'
   | 'complete'
   | 'failed';
 
@@ -128,6 +129,114 @@ export interface RecentTransaction {
   needs_review: boolean;
 }
 
+/* --- receipts ------------------------------------------------------------ */
+
+export type ReceiptStatus = 'pending' | 'needs_review' | 'confirmed' | 'failed';
+
+export interface ReceiptSummary {
+  id: string;
+  status: ReceiptStatus;
+  merchant: string | null;
+  posted_date: string | null;
+  total_cents: number | null;
+  total: number | null;
+  currency: string;
+  ocr_confidence: number;
+  needs_review: boolean;
+  page_count: number;
+  original_filename: string;
+  content_type: string;
+  transaction_id: string | null;
+  link_mode: 'created' | 'linked' | null;
+  created_at: string;
+}
+
+export interface ReceiptDetail extends ReceiptSummary {
+  subtotal_cents: number | null;
+  tax_cents: number | null;
+  tip_cents: number | null;
+  field_confidence: Record<string, number>;
+  parse_notes: Record<string, string>;
+  raw_text: string;
+  currency_warning: string | null;
+  base_currency: string;
+  categories: Category[];
+  accounts: Account[];
+  default_account_name: string;
+}
+
+export interface MatchSignal {
+  name: string;
+  detail: string;
+  contribution: number;
+}
+
+export interface MatchCandidate {
+  transaction_id: string;
+  posted_date: string;
+  merchant: string;
+  amount_cents: number;
+  amount: number;
+  currency: string;
+  account_id: string;
+  account_name: string;
+  category: string | null;
+  source_upload_id: string | null;
+  source_filename: string | null;
+  score: number;
+  signals: MatchSignal[];
+}
+
+export interface MatchCandidatesResponse {
+  receipt_id: string;
+  candidates: MatchCandidate[];
+  note: string;
+}
+
+export interface ConfirmResponse {
+  receipt_id: string;
+  transaction_id: string;
+  mode: 'create' | 'link';
+  amount_cents: number;
+  message: string;
+}
+
+/* --- alerts --------------------------------------------------------------- */
+
+export type AlertType =
+  | 'duplicate'
+  | 'near_duplicate'
+  | 'unusual_amount'
+  | 'new_merchant'
+  | 'large_for_merchant';
+
+export type AlertSeverity = 'low' | 'medium' | 'high';
+export type AlertStatus = 'open' | 'dismissed' | 'resolved';
+
+export interface Alert {
+  id: string;
+  alert_type: AlertType;
+  severity: AlertSeverity;
+  severity_note: string;
+  status: AlertStatus;
+  message: string;
+  evidence: Record<string, unknown>;
+  created_at: string;
+  transaction_id: string;
+  transaction_merchant: string;
+  transaction_date: string;
+  transaction_amount: number;
+  transaction_category?: string | null;
+}
+
+export interface AlertList {
+  items: Alert[];
+  open_count: number;
+  dismissed_count: number;
+  resolved_count: number;
+  disclaimer: string;
+}
+
 export interface Dashboard {
   period_label: string;
   total_spend: number;
@@ -148,7 +257,13 @@ export interface Dashboard {
   account_count: number;
   earliest_transaction: string | null;
   latest_transaction: string | null;
+  base_currency: string;
+  excluded_currencies: Record<string, number>;
+  currency_note: string | null;
+  pending_receipt_count: number;
   alerts_enabled: boolean;
+  open_alert_count: number;
+  alerts: Alert[];
   alerts_note: string;
 }
 
@@ -236,6 +351,12 @@ export interface SupportingTransaction {
   needs_review: boolean;
 }
 
+export interface RefinementChip {
+  key: string;
+  label: string;
+  description: string;
+}
+
 export interface AnalysisResult {
   run_id: string;
   question?: string;
@@ -250,6 +371,8 @@ export interface AnalysisResult {
   duration_ms?: number;
   cached: boolean;
   declined: boolean;
+  refinements?: RefinementChip[];
+  refined_from?: string | null;
 }
 
 export interface Capabilities {

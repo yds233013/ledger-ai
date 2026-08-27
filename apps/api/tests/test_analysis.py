@@ -40,6 +40,8 @@ def vocab() -> UserVocabulary:
             "transport": "Transport",
             "subscriptions": "Subscriptions",
             "income": "Income",
+            "transfers": "Transfers & Payments",
+            "fees": "Fees & Charges",
         },
         merchants=["Whole Foods MKT", "Blue Bottle Coffee", "Netflix.com", "Uber"],
     )
@@ -283,3 +285,44 @@ def test_no_rows_means_no_chart() -> None:
         intent=Intent.TOTAL, date_range=DateRange(start=TODAY, end=TODAY, label="today")
     )
     assert build_chart(plan, ExecutionResult()).kind == "none"
+
+
+class TestRecurringWindow:
+    """Repetition cannot be observed inside a 30-day default window."""
+
+    def test_recurring_widens_when_no_period_is_named(self, vocab: UserVocabulary) -> None:
+        from ledgerai.services.analysis.planner_rules import RECURRING_DEFAULT_MONTHS
+
+        plan, explanation = RulePlanner().plan("Which charges repeat every month?", vocab, TODAY)
+        span_days = (plan.date_range.end - plan.date_range.start).days
+
+        assert plan.intent == Intent.RECURRING
+        assert span_days > 150  # roughly six months, not thirty days
+        assert f"last {RECURRING_DEFAULT_MONTHS} months" in plan.date_range.label
+        assert any("repetition cannot be seen" in note for note in explanation.assumptions)
+
+    def test_an_explicit_period_is_respected(self, vocab: UserVocabulary) -> None:
+        plan, _ = RulePlanner().plan("Which charges repeat every month in 2025?", vocab, TODAY)
+        assert plan.date_range.label == "2025"
+
+    def test_other_intents_keep_the_thirty_day_default(self, vocab: UserVocabulary) -> None:
+        plan, _ = RulePlanner().plan("How much do I spend on coffee?", vocab, TODAY)
+        assert "no period specified" in plan.date_range.label
+
+
+class TestGenericWordsAreNotCategories:
+    """Ordinary English words must not be read as category names."""
+
+    def test_charges_does_not_mean_the_fees_category(self, vocab: UserVocabulary) -> None:
+        plan, _ = RulePlanner().plan("Which charges repeat every month?", vocab, TODAY)
+        assert plan.filters.category_slugs == []
+
+    def test_payments_does_not_mean_the_transfers_category(
+        self, vocab: UserVocabulary
+    ) -> None:
+        plan, _ = RulePlanner().plan("Show me my largest payments this year", vocab, TODAY)
+        assert "transfers" not in plan.filters.category_slugs
+
+    def test_an_explicit_category_name_still_matches(self, vocab: UserVocabulary) -> None:
+        plan, _ = RulePlanner().plan("How much did I pay in bank fees this year?", vocab, TODAY)
+        assert plan.filters.category_slugs == ["fees"]

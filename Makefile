@@ -85,7 +85,7 @@ test-web: ## Frontend component tests
 lint: lint-api lint-web ## Lint and typecheck everything
 
 lint-api: ## ruff + mypy
-	cd $(API) && .venv/bin/ruff check ledgerai tests && .venv/bin/mypy ledgerai
+	cd $(API) && .venv/bin/ruff check ledgerai tests ../../scripts && .venv/bin/mypy ledgerai
 
 lint-web: ## eslint + tsc
 	cd $(WEB) && npm run lint && npm run typecheck

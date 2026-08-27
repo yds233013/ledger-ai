@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from typing import Any
 
+from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -32,12 +33,14 @@ from ...models import (
     PlannerKind,
     StepStatus,
 )
+from ..ai import get_ai_client
 from . import cache as cache_module
 from .charts import ChartSpec, build_chart
 from .executor import (
     ExecutionResult,
     count_matching,
     data_watermark,
+    excluded_currency_counts,
     execute_plan,
     load_vocabulary,
 )
@@ -48,7 +51,8 @@ from .narrate import (
     verify_numeric_claims,
 )
 from .plan import AnalysisPlan
-from .planner_rules import RulePlanner, UserVocabulary
+from .planner_rules import PlanExplanation, RulePlanner, UserVocabulary
+from .refine import apply_refinement, available_refinements, top_row_label
 
 logger = logging.getLogger(__name__)
 
@@ -79,9 +83,15 @@ async def _never_disconnected() -> bool:
 
 
 class AnalysisRunner:
-    def __init__(self, session: AsyncSession, user_id: uuid.UUID) -> None:
+    def __init__(
+        self,
+        session: AsyncSession,
+        user_id: uuid.UUID,
+        base_currency: str = "USD",
+    ) -> None:
         self._session = session
         self._user_id = user_id
+        self._base_currency = base_currency.upper()
         self._planner = RulePlanner()
         self._seq = 0
 
@@ -126,19 +136,28 @@ class AnalysisRunner:
 
     # -- main entry point --------------------------------------------------
 
-    async def run(
+    async def run(  # noqa: PLR0915 - the five steps are the readable unit here
         self,
         question: str,
         *,
         today: date | None = None,
         is_disconnected: DisconnectCheck | None = None,
         use_cache: bool = True,
+        refine_from: uuid.UUID | None = None,
+        refinement: str | None = None,
     ) -> AsyncIterator[StreamEvent]:
         disconnected = is_disconnected or _never_disconnected
         today = today or datetime.now(UTC).date()
         started = time.perf_counter()
 
-        normalized = cache_module.normalize_question(question)
+        # A refinement is fully determined by (run_id, refinement key), so it
+        # caches independently of the phrasing that produced the original run.
+        cache_seed = (
+            f"{question}|refine:{refine_from}:{refinement}"
+            if refinement
+            else question
+        )
+        normalized = cache_module.normalize_question(cache_seed)
         watermark = await data_watermark(self._session, self._user_id)
         cache_key = cache_module.build_cache_key(self._user_id, normalized, watermark)
 
@@ -190,20 +209,39 @@ class AnalysisRunner:
 
             slugs, merchants, accounts = await load_vocabulary(self._session, self._user_id)
             vocab = UserVocabulary(
-                category_slugs=slugs, merchants=merchants, account_names=accounts
+                category_slugs=slugs,
+                merchants=merchants,
+                account_names=accounts,
+                base_currency=self._base_currency,
             )
-            plan, explanation = self._planner.plan(question, vocab, today)
+            refined_from_question: str | None = None
+            if refinement is not None and refine_from is not None:
+                plan, explanation, refined_from_question = await self._refine(
+                    refine_from, refinement, vocab
+                )
+                planner_kind, fallback_reason = PlannerKind.RULES, None
+            else:
+                plan, explanation, planner_kind, fallback_reason = self._plan(
+                    question, vocab, today
+                )
+            run.planner = planner_kind
             run.plan = plan.model_dump(mode="json")
 
             yield await self._emit(
                 run, AnalysisStepName.UNDERSTAND, StepStatus.COMPLETED,
                 f"Interpreted as: {plan.describe()}",
                 {
-                    "planner": self._planner.name,
+                    "planner": planner_kind.value,
                     "planner_note": (
                         "Parsed deterministically in application code — no language "
                         "model was involved in interpreting this question."
+                        if planner_kind == PlannerKind.RULES
+                        else "A language model proposed this plan. It was validated "
+                        "against the same schema the deterministic planner uses, and "
+                        "it computed nothing."
                     ),
+                    "planner_fallback_reason": fallback_reason,
+                    "refined_from": refined_from_question,
                     "interpretation": {
                         "intent": explanation.matched_intent,
                         "period": explanation.matched_period,
@@ -253,6 +291,20 @@ class AnalysisRunner:
                 STEP_TITLES[AnalysisStepName.AGGREGATE], {},
             )
             result = await execute_plan(self._session, self._user_id, plan)
+
+            # Say what a different currency put out of scope, rather than
+            # letting the total quietly omit it.
+            excluded = await excluded_currency_counts(self._session, self._user_id, plan)
+            if excluded:
+                summary = ", ".join(
+                    f"{count} in {code}" for code, count in sorted(excluded.items())
+                )
+                noun = "transaction is" if sum(excluded.values()) == 1 else "transactions are"
+                result.caveats.append(
+                    f"{summary} {noun} not included. Ledger AI does not convert "
+                    f"between currencies, so only {plan.currency} amounts are "
+                    f"totalled here."
+                )
             run.result = result.as_dict()
             yield await self._emit(
                 run, AnalysisStepName.AGGREGATE, StepStatus.COMPLETED,
@@ -324,10 +376,12 @@ class AnalysisRunner:
             await self._session.commit()
             await cache_module.store_run_id(cache_key, run.id)
 
-            yield StreamEvent(
-                event="result",
-                data=self._final_payload(run, result, chart, narration, cached=False),
+            payload = self._final_payload(run, result, chart, narration, cached=False)
+            payload["refinements"] = available_refinements(
+                plan, top_row_label(result.as_dict()["rows"])
             )
+            payload["refined_from"] = refined_from_question
+            yield StreamEvent(event="result", data=payload)
 
         except AnalysisCancelledError:
             run.status = AnalysisStatus.CANCELLED
@@ -355,14 +409,29 @@ class AnalysisRunner:
 
     # -- helpers -----------------------------------------------------------
 
+    def _plan(
+        self, question: str, vocab: UserVocabulary, today: date
+    ) -> tuple[AnalysisPlan, PlanExplanation, PlannerKind, str | None]:
+        """Plan the question, preferring the model only when it validates."""
+        client = get_ai_client()
+        if client is not None:
+            from ..ai.planner_llm import LLMPlanner
+
+            return LLMPlanner(client, self._planner).plan(question, vocab, today)
+
+        plan, explanation = self._planner.plan(question, vocab, today)
+        return plan, explanation, PlannerKind.RULES, None
+
     def _narrate(
         self, plan: AnalysisPlan, result: ExecutionResult, category_names: dict[str, str]
     ) -> tuple[str, NarratorKind, dict[str, Any]]:
-        """Deterministic narration in Phase 1.
+        """Template narration by default; model wording only when it verifies."""
+        client = get_ai_client()
+        if client is not None:
+            from ..ai.narrator_llm import narrate_with_model
 
-        The verification structure is produced either way, so the Phase 2 LLM
-        narrator plugs in without changing the payload the UI already renders.
-        """
+            return narrate_with_model(client, plan, result, category_names)
+
         narration = build_narration(plan, result, category_names)
         verified, unverified = verify_numeric_claims(narration, result)
         return (
@@ -437,6 +506,49 @@ class AnalysisRunner:
             "declined": False,
         }
 
+    async def _refine(
+        self, run_id: uuid.UUID, refinement: str, vocab: UserVocabulary
+    ) -> tuple[AnalysisPlan, PlanExplanation, str]:
+        """Apply a named refinement to a previous run's validated plan.
+
+        The source run is loaded scoped to this user, so a refinement cannot
+        reach anyone else's analysis.
+        """
+        source = (
+            await self._session.execute(
+                select(AnalysisRun).where(
+                    AnalysisRun.id == run_id,
+                    AnalysisRun.user_id == self._user_id,
+                    AnalysisRun.status == AnalysisStatus.COMPLETE,
+                )
+            )
+        ).scalar_one_or_none()
+        if source is None or source.plan is None:
+            raise ValueError("That analysis is no longer available to refine.")
+
+        previous = AnalysisPlan.model_validate(source.plan)
+        try:
+            refined, label = apply_refinement(
+                previous, refinement, vocab.category_slugs, vocab.merchants
+            )
+        except KeyError as exc:
+            raise ValueError(f"Unknown refinement: {refinement}") from exc
+
+        explanation = PlanExplanation(
+            matched_intent=f"{refined.intent.value} (refined: {label.lower()})",
+            matched_period=(
+                f"{refined.date_range.label} "
+                f"({refined.date_range.start} to {refined.date_range.end})"
+            ),
+            matched_filters=_describe_plan_filters(refined, vocab),
+            assumptions=[
+                f"Refined from your earlier question: “{source.question}”.",
+                "A refinement is a fixed transformation of the previous plan — "
+                "nothing was inferred from conversation history.",
+            ],
+        )
+        return refined, explanation, source.question
+
     async def _replay(self, run_id: str) -> list[StreamEvent] | None:
         """Re-emit a previous run's persisted steps.
 
@@ -488,6 +600,18 @@ class AnalysisRunner:
             )
             for step in run.steps
         ]
+        # A cached answer must offer the same follow-ups a live one does, or the
+        # UI silently loses a feature whenever a question repeats.
+        cached_refinements: list[dict[str, Any]] = []
+        if run.plan:
+            try:
+                cached_plan = AnalysisPlan.model_validate(run.plan)
+                cached_refinements = available_refinements(
+                    cached_plan, top_row_label((run.result or {}).get("rows", []))
+                )
+            except ValidationError:
+                cached_refinements = []
+
         events.append(
             StreamEvent(
                 event="result",
@@ -495,6 +619,8 @@ class AnalysisRunner:
                     "run_id": str(run.id),
                     "question": run.question,
                     "plan": run.plan,
+                    "refinements": cached_refinements,
+                    "refined_from": None,
                     "result": run.result,
                     "chart": run.chart_spec,
                     "narration": run.narration,
@@ -513,6 +639,17 @@ class AnalysisRunner:
             )
         )
         return events
+
+
+def _describe_plan_filters(plan: AnalysisPlan, vocab: UserVocabulary) -> list[str]:
+    described = [
+        f"category: {vocab.category_slugs.get(slug, slug)}"
+        for slug in plan.filters.category_slugs
+    ]
+    described += [f"merchant: {name}" for name in plan.filters.merchants]
+    if plan.filters.text_query:
+        described.append(f"description contains: “{plan.filters.text_query}”")
+    return described or ["none — all transactions in range"]
 
 
 def _supporting_from_steps(steps: list[AnalysisStep]) -> list[dict[str, Any]]:

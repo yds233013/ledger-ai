@@ -47,35 +47,94 @@ does the arithmetic.
 | Page | What it does |
 |---|---|
 | **Dashboard** | Total spend, month-over-month change, spending by category, a 12-month trend, and recent transactions. Transfers and card payments are excluded so money moved between your own accounts isn't counted as spending. |
-| **Upload** | Drag-and-drop CSV import with live job progress through `queued → extracting → normalizing → categorizing → complete`. Re-uploading the same file creates zero duplicate transactions. |
+| **Upload** | Drag-and-drop CSV or receipt import with live job progress through `queued → extracting → normalizing → categorizing → analyzing → complete`. Re-uploading the same file creates zero duplicate transactions. |
+| **Receipts** | JPEG, PNG and PDF receipts read locally with Tesseract. Original image beside editable fields with per-field confidence, then create a transaction or link the receipt to one you already imported. |
 | **Transactions** | Searchable, filterable table with inline correction, optimistic updates, confidence indicators, and a manual-review queue. A correction can be applied retroactively to every matching transaction — on by default, with the affected count shown before you confirm. |
 | **Ask Ledger** | Chat-style analysis with streamed inspectable steps, a generated Recharts visualization, the supporting transactions, and a plain-language explanation. |
 | **Settings** | Profile, an honest AI disclosure, and the real status of every feature — including the ones that aren't built. |
+
+The dashboard also carries a live **alerts** surface, grouped by how much
+attention each item deserves:
+
+| Band | Contains | Framing |
+|---|---|---|
+| **Worth reviewing** | exact and near duplicates | the only class that suggests an action — you may have been charged twice |
+| **Unusual for you** | unusual amounts, charges large for a merchant | larger than your own history suggests, often perfectly normal |
+| **For information** | first-time merchants | noted in passing, nothing to act on |
+
+Every alert opens to show the statistics that produced it, and none of them is a
+fraud claim.
 
 ---
 
 ## Quick start
 
-**Prerequisites:** Docker Desktop, Node 20+, and [uv](https://docs.astral.sh/uv/).
+### Prerequisites
+
+| Requirement | Why |
+|---|---|
+| **Docker Desktop** (running) | Postgres, Redis and MinIO |
+| **Node 20+** | the Next.js frontend |
+| **Python 3.12** + [uv](https://docs.astral.sh/uv/) | the FastAPI backend |
+| **Tesseract 5** | receipt OCR — `brew install tesseract` (macOS) or `apt install tesseract-ocr` |
+
+PDF receipts need **no** extra system package: `pypdfium2` ships its own
+rasterizer, so poppler is not required.
+
+### Steps
 
 ```bash
-make setup      # install backend + frontend dependencies, create .env files
-# Set AUTH_SECRET in .env AND apps/web/.env.local to the same value:
-#   openssl rand -base64 32
-make up         # Postgres :5433, Redis :6379, MinIO :9000/:9001
-make migrate    # apply database migrations
-make seed       # generate ~700 synthetic transactions over 14 months
-make dev        # api :8000, rq worker, web :3000
+git clone <this repo> && cd LedgerAI
+
+make setup                     # deps for both apps, plus .env files from the examples
+
+# 1. Set the SAME secret in BOTH files — the API verifies the token the web app mints:
+#      .env                 AUTH_SECRET=...
+#      apps/web/.env.local  AUTH_SECRET=...
+openssl rand -base64 32        # paste the output into both
+
+make up                        # Postgres :5433, Redis :6379, MinIO :9000 (console :9001)
+make migrate                   # apply all four migrations
+make seed                      # ~700 synthetic transactions, 14 months, plus alerts
+make dev                       # api :8000 + rq worker + web :3000, Ctrl-C stops all three
 ```
 
-Then open <http://localhost:3000> and sign in with the demo account:
+Open <http://localhost:3000> and sign in:
 
 ```
 demo@ledgerai.local / demo1234
 ```
 
-> Compose binds Postgres to host port **5433**, not 5432, so it doesn't collide
-> with a Postgres you may already be running locally.
+> **Ports.** Compose binds Postgres to host **5433**, not 5432, so it does not
+> collide with a Postgres you may already be running.
+
+> **macOS worker note.** `make dev-worker` sets
+> `OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES`. macOS aborts Objective-C runtime
+> initialisation inside a forked child and RQ forks a work horse per job; the
+> variable is a harmless no-op on Linux and in containers.
+
+### Optional: enable the AI features
+
+Everything above works with **no API key**. To switch on the optional planner,
+categorizer and narrator, set both in `.env`:
+
+```bash
+AI_ENABLED=true
+OPENAI_API_KEY=sk-...
+```
+
+With the flag off or the key blank, `get_ai_client()` returns `None` and no AI
+component is ever constructed. The test suite never needs a key.
+
+### Useful commands
+
+```bash
+make test      # 345 backend + 102 frontend tests
+make lint      # ruff, mypy, eslint, tsc --noEmit
+make reset     # drop all data and reseed from scratch
+make sample    # regenerate docs/samples/ CSV and receipts
+make down      # stop the containers (volumes are preserved)
+```
 
 ### Try it
 
@@ -83,15 +142,22 @@ demo@ledgerai.local / demo1234
 2. **Upload** — import `docs/samples/sample_statement_synthetic.csv`, watch the
    stages advance, then **upload the identical file again**: it reports
    "already processed" and imports nothing.
-3. **Transactions** — filter to *Needs review* and recategorize a `Zorblax
+3. **Receipts** — upload `docs/samples/receipts/receipt_grocers_synthetic.png` and the
+   deliberately-degraded `receipt_faded_synthetic.png`. The clean one reads cleanly; the
+   faded one lands in review with every money field marked *not found*, so you can type
+   the values from the image and confirm. Upload the cafe receipt after importing a
+   statement containing the same charge and Ledger offers to **link** it instead of
+   creating a duplicate.
+4. **Transactions** — filter to *Needs review* and recategorize a `Zorblax
    Quantum Widgets` row. Before you confirm, Ledger tells you how many other
    transactions from that merchant it will also change. Accept, and all of them
    update at once; the *next* file containing that merchant is categorized
    automatically too. Correct a single row with the option turned off, and a
    later bulk change will leave that row alone.
-4. **Ask Ledger** — ask *"How much did I spend on groceries last month compared
-   to the month before?"* Then open the **Running a structured aggregation**
-   step and read the SQL that produced the number.
+5. **Ask Ledger** — ask *"How much did I spend on groceries last month compared
+   to the month before?"* Open the **Running a structured aggregation** step and read
+   the SQL that produced the number, then use a **follow-up chip** to regroup the same
+   plan by merchant.
 
 ---
 
@@ -136,7 +202,29 @@ appropriate because both services are ours and co-deployed; RS256/JWKS is the
 right upgrade the moment third-party clients exist.
 
 **Money is integer cents, everywhere.** `amount_cents BIGINT`, `Decimal` for
-parsing, never a float. Negative is outflow, positive is inflow.
+parsing, never a float. Negative is outflow, positive is inflow — including a
+confirmed receipt, whose total becomes a **negative** transaction so it
+increases spending rather than reducing it.
+
+**Currencies are never added together.** FX conversion is out of scope, so every
+aggregate is restricted to the user's base currency by a predicate that lives in
+the same shared builder as the user-id check, and anything excluded is named:
+*"1 in EUR not included — Ledger AI does not convert between currencies."* A
+non-base-currency receipt warns before it can be confirmed.
+
+**Alerts are observations, not accusations.** Unusual-amount detection uses the
+median and median absolute deviation rather than mean and standard deviation,
+because the outlier being hunted inflates a standard deviation and hides itself.
+An amount that is normal *for its own merchant* is never reported as unusual —
+without that rule a $59.99 subscription is flagged every month simply for costing
+more than the typical $15.99 one. Every alert carries the statistics that produced
+it and a standing note that this is not fraud detection.
+
+**Follow-ups carry no hidden state.** A follow-up is a named, deterministic
+transform of the validated plan that produced the current answer, identified by
+`(run_id, refinement_key)`. There is no pronoun resolution and no conversation
+history: the refined plan is re-validated and displayed exactly as a fresh
+question would be.
 
 **Corrections are retroactive by default, but never destructive.** Applying a
 correction to "all matching transactions" updates every row sharing the same
@@ -178,7 +266,7 @@ beyond seven, hues stop being distinguishable.
 ## Testing
 
 ```bash
-make test      # 165 backend tests + 40 frontend tests
+make test      # 343 backend tests + 102 frontend tests
 make lint      # ruff, mypy, eslint, tsc --noEmit
 ```
 
@@ -187,6 +275,14 @@ security, the deterministic categorizer, the plan contract, date resolution,
 the numeric guard, and HTTP-level integration tests against a real Postgres
 test database — including that a second user cannot reach the first user's data
 through any endpoint, and that a fabricated figure in a narration is caught.
+
+Phase 2 adds: OCR parsing against synthetic fixtures through a **fake engine**
+(so no Tesseract binary is needed), alert thresholds asserted exactly at their
+boundaries, SSE cancellation at every step and stream-failure containment,
+receipt idempotency and non-destructive linking, mixed-currency behaviour, and
+AI fallback for timeout, rate limit, malformed JSON, schema violation and
+fabricated figures — every one with an injected fake client, so **the suite never
+needs an API key and never touches the network**.
 
 ---
 
@@ -198,13 +294,27 @@ normalization, deterministic categorization, dashboard, editable transactions,
 and the full Ask Ledger flow with SSE steps, a generated chart, supporting data
 and an explanation.
 
-**Phase 2.** Receipt upload with Tesseract OCR · confidence-based review
-workflow · duplicate and unusual-charge detection (median + MAD, robust to the
-outliers being hunted) · more question types · optional OpenAI planner,
-categorizer and narrator behind the existing interfaces.
+**Phase 2 — complete.** Receipt OCR for JPEG, PNG and PDF with confidence-scored
+fields and a manual-review workspace · create-or-link confirmation so a receipt
+never silently double-counts a statement charge · duplicate, near-duplicate,
+unusual-amount, new-merchant and large-for-merchant detection · currency
+correctness across the dashboard and Ask Ledger · explicit plan-refinement
+follow-ups · optional OpenAI planner, categorizer and narrator behind
+`AI_ENABLED`, every response Pydantic-validated with deterministic fallback.
 
 **Phase 3.** OAuth providers · real S3 · data export and deletion · production
 Dockerfiles · GitHub Actions CI · deployment packaging and portfolio polish.
+
+### Known limitations
+
+- **OCR is English-only** (`eng` traineddata) and handwritten receipts are out of
+  scope.
+- **No FX conversion.** Non-base-currency amounts are reported separately and
+  never summed into a base-currency total.
+- **Receipt deletion and storage cleanup are Phase 3.** Deleting a receipt and
+  purging its stored original from object storage is not implemented.
+- Alerts are statistical observations about your own uploaded data, not fraud
+  detection.
 
 ### Deliberately not built
 

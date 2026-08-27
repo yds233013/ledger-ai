@@ -53,7 +53,15 @@ export function useAnalysis() {
     setState(INITIAL);
   }, []);
 
-  const ask = useCallback(async (question: string, options: { useCache?: boolean } = {}) => {
+  const ask = useCallback(
+    async (
+      question: string,
+      options: {
+        useCache?: boolean;
+        refineFromRunId?: string;
+        refinement?: string;
+      } = {},
+    ) => {
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
@@ -65,7 +73,12 @@ export function useAnalysis() {
 
       await streamSse({
         url: `${API_URL}/api/analysis/runs`,
-        body: { question, use_cache: options.useCache ?? true },
+        body: {
+          question,
+          use_cache: options.useCache ?? true,
+          refine_from_run_id: options.refineFromRunId,
+          refinement: options.refinement,
+        },
         token,
         signal: controller.signal,
         onFrame: ({ event, data }) => {
@@ -132,7 +145,9 @@ export function useAnalysis() {
     } finally {
       if (abortRef.current === controller) abortRef.current = null;
     }
-  }, []);
+  },
+  [],
+  );
 
   return { state, ask, cancel, reset };
 }

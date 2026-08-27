@@ -93,6 +93,58 @@ horse, so a job still surfaces as failed in the UI when the horse is killed
 outright (OOM, SIGKILL, a macOS fork-safety abort) and never gets to run its
 own `except` block.
 
+## Receipts
+
+```
+upload (jpeg/png/pdf)
+   │  rasterize (pypdfium2 — no poppler needed) → grayscale → autocontrast → scale
+   ▼
+Tesseract (TSV) ──▶ per-word confidences
+   │
+   ▼
+parse: line-anchored labels, most-specific-first, last money token per line
+   │      + arithmetic check: subtotal + tax + tip ≈ total
+   ▼
+receipt row (status = pending | needs_review)   ← no transaction exists yet
+   │
+   ├── review page: image beside editable fields, per-field confidence
+   │
+   ├── confirm "create" → ONE transaction, amount_cents NEGATIVE,
+   │                      account chosen by the user or the named synthetic one
+   └── confirm "link"   → attaches to an existing transaction, changes nothing
+```
+
+Three parsing rules exist because a real Tesseract run produced the failure they
+guard against: a naive `TOTAL\s+([\d.]+)` matches inside `SUBTOTAL`; OCR emits
+`4,99` for `4.99`; and `TAX 8.25%  2.31` defeats a trailing-anchored pattern.
+
+## Alerts
+
+Each detector is a pure function over a transaction plus its history, so every
+threshold is unit-testable at its exact boundary. Unusual-amount detection uses
+median and MAD, and suppresses anything that is normal for its own merchant —
+without that, a $59.99 subscription is flagged every month for costing more than
+the typical $15.99 one.
+
+Idempotency is free: `UNIQUE(transaction_id, alert_type)` means re-running
+detection inserts nothing.
+
+### Severity is a presentation contract
+
+Severity is decided once, in the detectors, and the UI groups by it rather than
+inventing its own ranking:
+
+| Severity | Detectors | Meaning shown to the user |
+|---|---|---|
+| `high` | `exact_duplicate`, `near_duplicate` | *Worth reviewing — you may have been charged twice.* |
+| `medium` | `unusual_amount`, `large_for_merchant` | *Unusual compared with your own history. Not necessarily a problem.* |
+| `low` | `new_merchant` | *For information only.* |
+
+Duplicates are the only class that implies an action, so they lead. The text for
+each band comes from `SEVERITY_INTENT` in the detectors module and is returned
+by both the dashboard and `/api/alerts`, so a future surface cannot drift from
+this wording. No band asserts wrongdoing — asserted by test.
+
 ## Categorization
 
 Ordered stages, first confident hit wins:

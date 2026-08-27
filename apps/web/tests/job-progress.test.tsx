@@ -5,7 +5,10 @@ import { JobProgress } from '@/components/upload/job-progress';
 import type { JobStage, ProcessingJob } from '@/lib/types';
 
 function makeJob(stage: JobStage, overrides: Partial<ProcessingJob> = {}): ProcessingJob {
-  const progress = { queued: 0, extracting: 20, normalizing: 50, categorizing: 75, complete: 100, failed: 100 };
+  const progress: Record<JobStage, number> = {
+    queued: 0, extracting: 20, normalizing: 45, categorizing: 65,
+    analyzing: 85, complete: 100, failed: 100,
+  };
   return {
     id: 'job-1',
     upload_id: 'upload-1',
@@ -27,7 +30,9 @@ describe('JobProgress', () => {
     // Scoped to the stage list: the active stage name also appears in the
     // progress-bar header above it.
     const stages = screen.getByRole('list');
-    for (const label of ['Queued', 'Extracting', 'Normalizing', 'Categorizing', 'Complete']) {
+    for (const label of [
+      'Queued', 'Extracting', 'Normalizing', 'Categorizing', 'Analyzing', 'Complete',
+    ]) {
       expect(within(stages).getByText(label)).toBeInTheDocument();
     }
   });
@@ -35,7 +40,16 @@ describe('JobProgress', () => {
   it('reports progress accessibly', () => {
     render(<JobProgress job={makeJob('normalizing')} />);
     const bar = screen.getByRole('progressbar');
-    expect(bar).toHaveAttribute('aria-valuenow', '50');
+    expect(bar).toHaveAttribute('aria-valuenow', '45');
+  });
+
+  it('shows the duplicate-detection stage', () => {
+    render(<JobProgress job={makeJob('analyzing')} />);
+    const stages = screen.getByRole('list');
+    expect(within(stages).getByText('Analyzing')).toBeInTheDocument();
+    expect(
+      screen.getByText('Checking for duplicates and unusual charges'),
+    ).toBeInTheDocument();
   });
 
   it('summarizes the import once complete', () => {

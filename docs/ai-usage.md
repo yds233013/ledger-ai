@@ -1,6 +1,6 @@
 # AI usage and disclosure
 
-## What runs in Phase 1
+## What runs by default
 
 **Nothing.** No language model is configured and none is called.
 
@@ -13,7 +13,7 @@
 
 The app is fully demonstrable with no API key, no network, and no account.
 
-## What Phase 2 adds
+## What an API key adds
 
 An OpenAI key switches on three optional components. **None of them computes a
 number.**
@@ -24,8 +24,16 @@ number.**
 | `LLMCategorizer` | Suggests a category for an unknown merchant | **Merchant name strings only**, batched, cached per merchant so any merchant is sent at most once |
 | `LLMNarrator` | Words the explanation | The plan and the **already-computed result rows** |
 
-Never sent: raw uploaded files, file contents, account numbers or masks,
-balances, dates, individual amounts, or full statements.
+Never sent: raw uploaded files, file contents, **receipt images**, **stored OCR
+text**, account numbers or masks, balances, dates, individual amounts, or full
+statements. A test asserts that no module in `services/ai` can even reference
+receipt or OCR code, in the same style as the executor guard.
+
+**Every response is validated by Pydantic**, and every failure mode — timeout,
+rate limit, malformed JSON, schema violation, a hallucinated field, an unknown
+category slug — falls back to the deterministic path with the reason recorded in
+the step payload, so the UI never pretends a model ran when it did not. A small
+circuit breaker stops calling a degraded API after repeated failures.
 
 ## The guarantees, and how they're enforced
 
