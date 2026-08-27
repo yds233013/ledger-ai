@@ -722,7 +722,8 @@ async def test_profile_discloses_what_is_actually_available(
     # Still honest about what is not built.
     assert features["currency_conversion"]["available"] is False
     assert "never added to your base-currency totals" in features["currency_conversion"]["note"]
-    assert features["export"]["available"] is False
-    assert "Phase 3" in features["export"]["note"]
+    assert features["export"]["available"] is True
+    assert features["deletion"]["available"] is True
+    assert "Permanent" in features["deletion"]["note"]
     assert features["connected_accounts"]["available"] is False
     assert "does not connect to any real" in features["connected_accounts"]["note"]

@@ -10,7 +10,7 @@ side without any change to this contract.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Request, status
 from sqlalchemy import select
 
 from ..config import settings
@@ -19,12 +19,19 @@ from ..models import User
 from ..schemas.common import LoginRequest, LoginResponse, UserOut
 from ..security.jwt import create_access_token
 from ..security.passwords import verify_password
+from ..security.ratelimit import LOGIN_LIMIT, enforce
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 
 @router.post("/login", response_model=LoginResponse)
-async def login(payload: LoginRequest, session: DbSession) -> LoginResponse:
+async def login(
+    payload: LoginRequest, request: Request, session: DbSession
+) -> LoginResponse:
+    # Per IP, not per account: the thing being throttled is credential
+    # guessing, and the guesser chooses the account name.
+    await enforce(request, LOGIN_LIMIT)
+
     user = (
         await session.execute(select(User).where(User.email == payload.email.lower().strip()))
     ).scalar_one_or_none()

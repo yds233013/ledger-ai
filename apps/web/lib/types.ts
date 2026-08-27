@@ -263,6 +263,7 @@ export interface Dashboard {
   pending_receipt_count: number;
   alerts_enabled: boolean;
   open_alert_count: number;
+  alerts_shown: number;
   alerts: Alert[];
   alerts_note: string;
 }
@@ -388,6 +389,18 @@ export interface FeatureStatus {
   label: string;
   available: boolean;
   note: string;
+}
+
+export interface DeletionResult {
+  dry_run: boolean;
+  account_removed: boolean;
+  total_rows: number;
+  rows_by_table: Record<string, number>;
+  storage_objects_removed: number;
+  cache_keys_removed: number;
+  queued_jobs_cancelled: number;
+  errors: string[];
+  message: string;
 }
 
 export interface Profile {

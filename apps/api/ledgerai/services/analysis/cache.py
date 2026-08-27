@@ -50,10 +50,46 @@ async def lookup_run_id(cache_key: str) -> str | None:
         return None
 
 
-async def store_run_id(cache_key: str, run_id: uuid.UUID | str) -> None:
+async def store_run_id(
+    cache_key: str, run_id: uuid.UUID | str, user_id: uuid.UUID | None = None
+) -> None:
+    """Cache the run id, and remember the key so it can be purged precisely.
+
+    The cache key is a digest, so nothing about it identifies its owner. Without
+    the index below, deleting an account could only wait for the TTL — this way
+    deletion actually removes the entries.
+    """
     try:
-        await get_async_redis().setex(
-            f"analysis:{cache_key}", settings.analysis_cache_ttl_seconds, str(run_id)
-        )
+        client = get_async_redis()
+        key = f"analysis:{cache_key}"
+        await client.setex(key, settings.analysis_cache_ttl_seconds, str(run_id))
+        if user_id is not None:
+            index = user_index_key(user_id)
+            await client.sadd(index, key)
+            # The index must not outlive the entries it points at.
+            await client.expire(index, settings.analysis_cache_ttl_seconds * 24)
     except Exception:  # noqa: BLE001
         return
+
+
+def user_index_key(user_id: uuid.UUID | str) -> str:
+    return f"analysis-keys:{user_id}"
+
+
+async def purge_user_cache(user_id: uuid.UUID) -> int:
+    """Remove every cached analysis belonging to one user.
+
+    Returns how many keys were removed. A cache outage must not block a
+    deletion, so failures are swallowed and reported as zero.
+    """
+    try:
+        client = get_async_redis()
+        index = user_index_key(user_id)
+        keys = await client.smembers(index)
+        removed = 0
+        if keys:
+            removed = await client.delete(*keys)
+        await client.delete(index)
+        return int(removed)
+    except Exception:  # noqa: BLE001
+        return 0

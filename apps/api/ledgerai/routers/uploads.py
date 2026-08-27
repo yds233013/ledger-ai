@@ -10,7 +10,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from fastapi import APIRouter, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, File, HTTPException, Request, UploadFile, status
 from pydantic import BaseModel
 from sqlalchemy import desc
 from sqlalchemy.exc import IntegrityError
@@ -21,6 +21,7 @@ from ..jobs.process_upload import mark_job_failed, process_upload
 from ..jobs.queue import get_queue
 from ..models import JobStage, ProcessingJob, Upload, UploadKind, UploadStatus
 from ..security.filenames import build_storage_key, sanitize_filename
+from ..security.ratelimit import UPLOAD_LIMIT, enforce
 from ..security.validators import (
     ValidationError,
     detect_kind,
@@ -77,10 +78,14 @@ async def _read_bounded(file: UploadFile) -> bytes:
 
 @router.post("", response_model=UploadOut, status_code=status.HTTP_201_CREATED)
 async def create_upload(
+    request: Request,
     user: CurrentUser,
     session: DbSession,
     file: UploadFile = File(...),
 ) -> UploadOut:
+    # Uploads are the widest attack surface here: they consume storage, worker
+    # time and OCR cycles. Budgeted per user, not per IP.
+    await enforce(request, UPLOAD_LIMIT, key=str(user.id))
     try:
         data = await _read_bounded(file)
         validate_size(len(data))

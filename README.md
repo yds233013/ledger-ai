@@ -129,12 +129,33 @@ component is ever constructed. The test suite never needs a key.
 ### Useful commands
 
 ```bash
-make test      # 345 backend + 102 frontend tests
-make lint      # ruff, mypy, eslint, tsc --noEmit
-make reset     # drop all data and reseed from scratch
-make sample    # regenerate docs/samples/ CSV and receipts
-make down      # stop the containers (volumes are preserved)
+make test        # 401 backend + 127 frontend tests
+make lint        # ruff, mypy, eslint, tsc --noEmit
+make reset       # drop all data and reseed from scratch
+make sample      # regenerate docs/samples/ CSV and receipts
+make sweep       # retention sweep: stuck jobs, stale files, abandoned receipts
+make down        # stop the containers (volumes are preserved)
 ```
+
+### Production images
+
+The three images that would be deployed can be built and exercised locally:
+
+```bash
+export AUTH_SECRET="$(openssl rand -base64 32)"
+export DEMO_USER_PASSWORD="something-not-the-default"
+
+make prod-build   # web, api and worker images
+make prod-smoke   # builds, checks non-root, migrations-once, health, shutdown
+make prod-up      # run the production stack (web :3000, api :8000)
+make prod-down
+```
+
+`docker-compose.prod.yml` runs migrations in a **separate one-shot service**
+that the API and worker wait on, rather than on every replica's boot — a
+partially-applied migration from two racing replicas is the worst state to be
+in. In a hosted environment the equivalent is a pre-deploy command on one
+service.
 
 ### Try it
 
@@ -302,8 +323,16 @@ correctness across the dashboard and Ask Ledger · explicit plan-refinement
 follow-ups · optional OpenAI planner, categorizer and narrator behind
 `AI_ENABLED`, every response Pydantic-validated with deterministic fallback.
 
-**Phase 3.** OAuth providers · real S3 · data export and deletion · production
-Dockerfiles · GitHub Actions CI · deployment packaging and portfolio polish.
+**Phase 3, in progress.** Done: production Dockerfiles for web, API and worker
+· a production Compose stack with migrations as a separate one-shot release
+step · locked Python dependencies (`uv.lock`) · GitHub Actions CI · data export
+· data and account deletion reaching the database, object storage, the analysis
+cache and the queue · individual receipt deletion · retention sweeps for stuck
+jobs, failed-upload files and abandoned receipts · rate limiting and log
+redaction.
+
+Still to come: public-demo authentication, GitHub OAuth, deployment, and the
+portfolio write-up.
 
 ### Known limitations
 
@@ -311,8 +340,9 @@ Dockerfiles · GitHub Actions CI · deployment packaging and portfolio polish.
   scope.
 - **No FX conversion.** Non-base-currency amounts are reported separately and
   never summed into a base-currency total.
-- **Receipt deletion and storage cleanup are Phase 3.** Deleting a receipt and
-  purging its stored original from object storage is not implemented.
+- **Alerts are summarised, not browsed.** The dashboard shows the eight most
+  serious open alerts and says how many it is not showing; there is no
+  dedicated alerts page.
 - Alerts are statistical observations about your own uploaded data, not fraud
   detection.
 

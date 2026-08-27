@@ -23,6 +23,7 @@ from sqlalchemy.orm import selectinload
 from ..config import settings
 from ..deps import CurrentUser, DbSession
 from ..models import AnalysisRun, AnalysisStatus
+from ..security.ratelimit import ANALYSIS_LIMIT, enforce
 from ..services.analysis.runner import AnalysisRunner
 from ..services.scoping import user_analysis_runs
 
@@ -97,6 +98,7 @@ async def capabilities(user: CurrentUser) -> CapabilitiesOut:
 @router.post("/runs")
 async def ask(payload: AskRequest, request: Request, user: CurrentUser, session: DbSession):
     """Stream one analysis as Server-Sent Events."""
+    await enforce(request, ANALYSIS_LIMIT, key=str(user.id))
     runner = AnalysisRunner(session, user.id, base_currency=user.base_currency)
 
     async def event_stream() -> AsyncIterator[str]:

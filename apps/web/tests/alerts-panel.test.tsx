@@ -176,3 +176,28 @@ describe('AlertsPanel — priority presentation', () => {
     expect(screen.getByText(DISCLAIMER)).toBeInTheDocument();
   });
 });
+
+describe('AlertsPanel — honest truncation', () => {
+  it('says how many of the open alerts it is actually showing', () => {
+    // The panel deliberately carries only the most serious alerts; implying it
+    // has them all would hide the rest with no way to reach them.
+    renderPanel([makeAlert({ id: 'a' }), makeAlert({ id: 'b' })], 30);
+    expect(screen.getByText('Showing 2 of 30 open alerts, most serious first.')).toBeInTheDocument();
+  });
+
+  it('links somewhere the rest can be reviewed', () => {
+    renderPanel([makeAlert({ id: 'a' })], 30);
+    const link = screen.getByRole('link', { name: /Review flagged transactions/ });
+    expect(link).toHaveAttribute('href', '/transactions?review=needs_review');
+  });
+
+  it('says nothing when it is showing everything', () => {
+    renderPanel([makeAlert({ id: 'a' }), makeAlert({ id: 'b' })], 2);
+    expect(screen.queryByText(/Showing \d+ of/)).not.toBeInTheDocument();
+  });
+
+  it('says nothing when there are no alerts at all', () => {
+    renderPanel([], 0);
+    expect(screen.queryByText(/Showing \d+ of/)).not.toBeInTheDocument();
+  });
+});

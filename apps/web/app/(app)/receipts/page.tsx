@@ -39,6 +39,7 @@ export default function ReceiptsPage() {
   const [draft, setDraft] = useState<ReceiptDraft | null>(null);
   const [notice, setNotice] = useState<{ tone: 'ok' | 'error'; text: string } | null>(null);
   const [linkingId, setLinkingId] = useState<string | null>(null);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
 
   const listQuery = useQuery({
     queryKey: queryKeys.receipts(),
@@ -123,6 +124,22 @@ export default function ReceiptsPage() {
     },
   });
 
+  const removeReceipt = useMutation({
+    mutationFn: (id: string) => api.deleteReceipt(id),
+    onSuccess: (result) => {
+      setNotice({ tone: 'ok', text: result.message });
+      setSelectedId(null);
+      setDraft(null);
+      void queryClient.invalidateQueries({ queryKey: queryKeys.receiptsAll });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.dashboard });
+    },
+    onError: (error) =>
+      setNotice({
+        tone: 'error',
+        text: error instanceof Error ? error.message : 'Could not delete this receipt.',
+      }),
+  });
+
   const reject = useMutation({
     mutationFn: (transactionId: string) => api.rejectCandidate(selectedId!, transactionId),
     onSuccess: () =>
@@ -191,6 +208,7 @@ export default function ReceiptsPage() {
                       onClick={() => {
                         setSelectedId(item.id);
                         setNotice(null);
+                        setConfirmingDelete(false);
                       }}
                       aria-current={item.id === selectedId ? 'true' : undefined}
                       className={cn(
@@ -292,25 +310,72 @@ export default function ReceiptsPage() {
                       categories={receipt.categories}
                     />
 
-                    {receipt.status !== 'confirmed' ? (
-                      <div className="mt-5 flex flex-wrap gap-2 border-t border-line pt-4">
-                        <button
-                          type="button"
-                          onClick={() => confirm.mutate({ mode: 'create' })}
-                          disabled={confirm.isPending || !draft.total || !draft.merchant}
-                          className="btn-primary"
-                        >
-                          {confirm.isPending && linkingId === null ? <Spinner /> : null}
-                          Create transaction
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => save.mutate()}
-                          disabled={save.isPending}
-                          className="btn-secondary"
-                        >
-                          Save corrections
-                        </button>
+                    <div className="mt-5 flex flex-wrap items-center gap-2 border-t border-line pt-4">
+                      {receipt.status !== 'confirmed' ? (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => confirm.mutate({ mode: 'create' })}
+                            disabled={confirm.isPending || !draft.total || !draft.merchant}
+                            className="btn-primary"
+                          >
+                            {confirm.isPending && linkingId === null ? <Spinner /> : null}
+                            Create transaction
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => save.mutate()}
+                            disabled={save.isPending}
+                            className="btn-secondary"
+                          >
+                            Save corrections
+                          </button>
+                        </>
+                      ) : null}
+
+                      <button
+                        type="button"
+                        onClick={() => setConfirmingDelete(true)}
+                        disabled={removeReceipt.isPending}
+                        className="btn-ghost ml-auto text-negative hover:bg-negative/10"
+                      >
+                        Delete receipt
+                      </button>
+                    </div>
+
+                    {confirmingDelete ? (
+                      <div
+                        data-testid="receipt-delete-confirm"
+                        className="mt-3 rounded-lg border border-negative/30 bg-negative/5 p-3"
+                      >
+                        <p className="text-sm text-ink">
+                          Delete this receipt and its stored image?
+                        </p>
+                        <p className="mt-1 text-xs leading-relaxed text-ink-muted">
+                          {receipt.transaction_id
+                            ? 'The transaction it is linked to is kept — deleting a receipt does not change what you spent.'
+                            : 'No transaction was created from this receipt, so nothing else changes.'}
+                        </p>
+                        <div className="mt-3 flex gap-2">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setConfirmingDelete(false);
+                              removeReceipt.mutate(receipt.id);
+                            }}
+                            className="btn inline-flex bg-negative text-white hover:opacity-90"
+                          >
+                            {removeReceipt.isPending ? <Spinner /> : null}
+                            Delete
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setConfirmingDelete(false)}
+                            className="btn-ghost"
+                          >
+                            Keep it
+                          </button>
+                        </div>
                       </div>
                     ) : null}
                   </Card>

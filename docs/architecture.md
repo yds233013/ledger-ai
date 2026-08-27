@@ -189,6 +189,42 @@ Both paths select rows through `_siblings()`, where `user_id` is the first and
 non-optional predicate. Two users with the same merchant name have the same
 `merchant_key`, and neither can reach the other's rows.
 
+## Deployment shape
+
+```
+                 ┌──────────┐
+   browser ─────▶│   web    │  Next.js standalone, non-root
+                 └────┬─────┘
+                      │ bearer token
+                 ┌────▼─────┐        ┌──────────┐
+                 │   api    │───────▶│ postgres │
+                 │ FastAPI  │        └──────────┘
+                 └────┬─────┘        ┌──────────┐
+                      │  enqueue ───▶│  redis   │◀──┐
+                      │              └──────────┘   │
+                 ┌────▼─────┐                       │
+                 │  worker  │───────────────────────┘
+                 │    RQ    │
+                 └────┬─────┘
+                      │  receipts
+                 ┌────▼─────────────┐
+                 │ volume or S3     │
+                 └──────────────────┘
+
+   migrate ── one-shot, runs to completion before api and worker start
+```
+
+Three images, each non-root with a health check: `ledgerai-web` (82 MB),
+`ledgerai-api` and `ledgerai-worker` (145 MB, sharing a base so OCR behaves
+identically). Dependencies install from `uv.lock` with `--frozen`, so an image
+built today and one built next month contain the same versions.
+
+**Migrations are a release step, never a per-replica boot step.** Two replicas
+racing `alembic upgrade head` can leave a partially-applied migration, which is
+the worst state to recover from. In Compose that is a one-shot `migrate`
+service the others wait on; in a hosted environment it is a pre-deploy command
+on a single service.
+
 ## Caching
 
 ```

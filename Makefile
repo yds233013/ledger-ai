@@ -10,7 +10,8 @@ PY := $(API)/.venv/bin
 
 .DEFAULT_GOAL := help
 .PHONY: help setup up down logs migrate revision seed reset dev dev-api dev-web dev-worker \
-        test test-api test-web lint lint-api lint-web typecheck sample clean
+        test test-api test-web lint lint-api lint-web typecheck sample sweep lock clean \
+        prod-build prod-up prod-down prod-smoke
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -91,6 +92,25 @@ lint-web: ## eslint + tsc
 	cd $(WEB) && npm run lint && npm run typecheck
 
 typecheck: lint-web ## Alias for the frontend typecheck
+
+prod-build: ## Build the three production images
+	docker compose -f docker-compose.prod.yml build
+
+prod-up: ## Run the production stack locally (needs AUTH_SECRET + DEMO_USER_PASSWORD)
+	docker compose -f docker-compose.prod.yml up -d
+	@docker compose -f docker-compose.prod.yml ps
+
+prod-down: ## Stop the production stack
+	docker compose -f docker-compose.prod.yml down
+
+prod-smoke: ## Verify the production containers: non-root, healthy, migrations once
+	./scripts/prod_smoke.sh
+
+sweep: ## Run the retention sweep (stuck jobs, failed-upload files, stale receipts)
+	$(PY)/python scripts/retention_sweep.py
+
+lock: ## Re-resolve and write apps/api/uv.lock
+	cd $(API) && uv lock
 
 clean: ## Remove caches and build output
 	rm -rf $(API)/.pytest_cache $(API)/.ruff_cache $(API)/.mypy_cache

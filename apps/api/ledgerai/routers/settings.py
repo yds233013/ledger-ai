@@ -7,13 +7,19 @@ rather than shown as broken buttons.
 
 from __future__ import annotations
 
-from fastapi import APIRouter
-from pydantic import BaseModel
+import uuid
+from datetime import datetime
+
+from fastapi import APIRouter, HTTPException, Request, Response, status
+from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 
 from ..config import settings as app_settings
 from ..deps import CurrentUser, DbSession
 from ..models import Account, Transaction, Upload
+from ..security.ratelimit import DESTRUCTIVE_LIMIT, EXPORT_LIMIT, enforce
+from ..services.analysis.cache import purge_user_cache
+from ..services.lifecycle import build_export, delete_user_data
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
@@ -115,11 +121,17 @@ async def profile(user: CurrentUser, session: DbSession) -> ProfileOut:
             ),
             FeatureStatus(
                 key="export",
-                label="Data export and deletion",
-                available=False,
+                label="Data export",
+                available=True,
+                note="Download every record held for this account as a ZIP.",
+            ),
+            FeatureStatus(
+                key="deletion",
+                label="Data and account deletion",
+                available=True,
                 note=(
-                    "Planned for Phase 3. Deleting a receipt and purging its stored "
-                    "original from object storage is part of that work."
+                    "Removes database records, stored receipt files, cached analyses "
+                    "and any queued processing jobs. Permanent."
                 ),
             ),
             FeatureStatus(
@@ -133,3 +145,125 @@ async def profile(user: CurrentUser, session: DbSession) -> ProfileOut:
             ),
         ],
     )
+
+
+# --------------------------------------------------------------------------
+# Export and deletion
+# --------------------------------------------------------------------------
+
+
+class DeletionRequest(BaseModel):
+    """Typed confirmation.
+
+    Deleting reaches the database, object storage, the analysis cache and the
+    queue, and none of it comes back. A checkbox is not enough friction.
+    """
+
+    confirmation: str = Field(
+        description="Must be exactly DELETE for the request to proceed.",
+        max_length=32,
+    )
+    dry_run: bool = Field(
+        default=False,
+        description="Report what would be removed without removing anything.",
+    )
+
+
+class DeletionResponse(BaseModel):
+    dry_run: bool
+    account_removed: bool
+    total_rows: int
+    rows_by_table: dict[str, int]
+    storage_objects_removed: int
+    cache_keys_removed: int
+    queued_jobs_cancelled: int
+    errors: list[str]
+    message: str
+
+
+def _require_confirmation(payload: DeletionRequest) -> None:
+    if payload.confirmation.strip() != "DELETE":
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail='Type DELETE exactly to confirm. Nothing has been removed.',
+        )
+
+
+@router.get("/export")
+async def export_data(
+    request: Request, user: CurrentUser, session: DbSession
+) -> Response:
+    """Download everything held for this account as a ZIP.
+
+    Runs on the request's own session so it sees exactly what the caller can
+    see; every query inside build_export filters on user_id.
+    """
+    await enforce(request, EXPORT_LIMIT, key=str(user.id))
+    archive = await build_export(session, user)
+    stamp = datetime.now().strftime("%Y%m%d")  # noqa: DTZ005 - filename only
+    return Response(
+        content=archive,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="ledgerai-export-{stamp}.zip"',
+            "Cache-Control": "private, no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+async def _run_deletion(
+    request: Request,
+    user: CurrentUser,
+    session: DbSession,
+    payload: DeletionRequest,
+    *,
+    delete_account: bool,
+) -> DeletionResponse:
+    await enforce(request, DESTRUCTIVE_LIMIT, key=str(user.id))
+    _require_confirmation(payload)
+
+    user_id = uuid.UUID(str(user.id))
+    result = await delete_user_data(
+        session, user, delete_account=delete_account, dry_run=payload.dry_run
+    )
+    report = result.as_dict()
+
+    if not payload.dry_run:
+        # The cache is keyed by digest, so it is purged through the per-user
+        # index rather than by pattern-matching keys.
+        report["cache_keys_removed"] = await purge_user_cache(user_id)
+        await session.commit()
+
+    if payload.dry_run:
+        message = (
+            f"Dry run — nothing was removed. This would delete "
+            f"{report['total_rows']} record(s)"
+            + (" and your account." if delete_account else ".")
+        )
+    elif delete_account:
+        message = "Your account and all of its data have been permanently deleted."
+    else:
+        message = (
+            f"{report['total_rows']} record(s), {report['storage_objects_removed']} "
+            "stored file(s) and every cached analysis have been permanently deleted. "
+            "Your account remains."
+        )
+
+    return DeletionResponse(**report, message=message)
+
+
+@router.post("/delete-data", response_model=DeletionResponse)
+async def delete_data(
+    payload: DeletionRequest, request: Request, user: CurrentUser, session: DbSession
+) -> DeletionResponse:
+    """Remove transactions, uploads, receipts, alerts and analyses. Keep the account."""
+    return await _run_deletion(request, user, session, payload, delete_account=False)
+
+
+@router.post("/delete-account", response_model=DeletionResponse)
+async def delete_account(
+    payload: DeletionRequest, request: Request, user: CurrentUser, session: DbSession
+) -> DeletionResponse:
+    """Remove the account and everything belonging to it."""
+    return await _run_deletion(request, user, session, payload, delete_account=True)

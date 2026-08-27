@@ -1,6 +1,7 @@
 # Local development infrastructure for Ledger AI.
 # App processes (Next.js, FastAPI, RQ worker) run natively for fast reload —
-# see the Makefile. Production packaging lives in docker-compose.prod.yml.
+# see the Makefile. Production images and their stack live in
+# docker-compose.prod.yml (`make prod-build && make prod-up`).
 
 services:
   postgres:

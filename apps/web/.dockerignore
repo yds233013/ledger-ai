@@ -1,0 +1,18 @@
+# node_modules is 479 MB and .next is 83 MB; both are rebuilt inside the image.
+node_modules/
+.next/
+out/
+coverage/
+playwright-report/
+test-results/
+
+tests/
+vitest.config.ts
+
+.env
+.env.*
+!.env.example
+
+.git/
+.gitignore
+*.md

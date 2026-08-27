@@ -374,7 +374,7 @@ class AnalysisRunner:
             run.status = AnalysisStatus.COMPLETE
             run.duration_ms = _ms(started)
             await self._session.commit()
-            await cache_module.store_run_id(cache_key, run.id)
+            await cache_module.store_run_id(cache_key, run.id, self._user_id)
 
             payload = self._final_payload(run, result, chart, narration, cached=False)
             payload["refinements"] = available_refinements(

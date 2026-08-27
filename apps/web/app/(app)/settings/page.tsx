@@ -2,6 +2,8 @@
 
 import { useQuery } from '@tanstack/react-query';
 
+import { DangerZone } from '@/components/settings/danger-zone';
+import { ExportCard } from '@/components/settings/export-card';
 import { AiBadge, Badge, Card, CardHeader, ErrorState, Skeleton } from '@/components/ui/primitives';
 import { api } from '@/lib/api-client';
 import { queryKeys } from '@/lib/query-keys';
@@ -119,26 +121,9 @@ export default function SettingsPage() {
         </div>
       </Card>
 
-      <Card>
-        <CardHeader title="Data export and deletion" subtitle="Planned for Phase 3" />
-        <div className="p-5">
-          <p className="text-sm text-ink-muted">
-            Exporting your data as CSV/JSON, deleting uploaded data, and deleting your account are
-            planned for Phase 3. They are not wired up yet, so no button here pretends to work.
-          </p>
-          <div className="mt-4 flex flex-wrap gap-2">
-            <button type="button" disabled className="btn-secondary" title="Planned for Phase 3">
-              Export my data
-            </button>
-            <button type="button" disabled className="btn-secondary" title="Planned for Phase 3">
-              Delete uploaded data
-            </button>
-            <button type="button" disabled className="btn-secondary" title="Planned for Phase 3">
-              Delete account
-            </button>
-          </div>
-        </div>
-      </Card>
+      <ExportCard />
+
+      <DangerZone />
     </div>
   );
 }

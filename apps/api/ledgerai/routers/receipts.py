@@ -230,6 +230,46 @@ async def get_receipt_image(
     )
 
 
+@router.delete("/{receipt_id}")
+async def remove_receipt(
+    receipt_id: uuid.UUID, user: CurrentUser, session: DbSession
+) -> dict:
+    """Delete a receipt and its stored original.
+
+    A confirmed receipt detaches from its transaction rather than taking it
+    with it: the money was still spent, and deleting the evidence should not
+    silently change someone's spending.
+    """
+    receipt = await _load_receipt(session, user.id, receipt_id)
+    receipt_id_value = receipt.id
+    transaction_id = receipt.transaction_id
+    storage_key = receipt.upload.storage_key
+
+    removed_file = True
+    try:
+        get_storage().delete(storage_key)
+    except StorageError:
+        removed_file = False
+
+    await session.delete(receipt)
+    upload = await session.get(Upload, receipt.upload_id)
+    if upload is not None:
+        await session.delete(upload)
+    await session.commit()
+
+    return {
+        "receipt_id": str(receipt_id_value),
+        "storage_removed": removed_file,
+        "detached_transaction_id": str(transaction_id) if transaction_id else None,
+        "message": (
+            "Receipt deleted. The transaction it was linked to was kept — deleting a "
+            "receipt does not change what you spent."
+            if transaction_id
+            else "Receipt and its stored file deleted."
+        ),
+    }
+
+
 @router.patch("/{receipt_id}", response_model=ReceiptDetail)
 async def update_receipt(
     receipt_id: uuid.UUID, payload: ReceiptUpdate, user: CurrentUser, session: DbSession

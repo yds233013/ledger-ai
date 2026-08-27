@@ -127,6 +127,10 @@ export function AlertsPanel({
   openCount: number;
   note: string;
 }) {
+  // The panel deliberately shows only the most serious alerts. Saying so is
+  // the difference between a considered summary and a list that looks complete
+  // but isn't.
+  const hidden = Math.max(0, openCount - alerts.length);
   const queryClient = useQueryClient();
   const [actingId, setActingId] = useState<string | null>(null);
 
@@ -188,6 +192,20 @@ export function AlertsPanel({
           </section>
         ))
       )}
+
+      {hidden > 0 ? (
+        <div className="flex flex-wrap items-center justify-between gap-2 border-t border-line px-5 py-3">
+          <p className="text-xs text-ink-muted">
+            Showing {alerts.length} of {openCount} open alerts, most serious first.
+          </p>
+          <Link
+            href="/transactions?review=needs_review"
+            className="text-xs font-medium text-brand hover:underline"
+          >
+            Review flagged transactions
+          </Link>
+        </div>
+      ) : null}
 
       <p className="border-t border-line px-5 py-3 text-xs leading-relaxed text-ink-faint">
         {note}

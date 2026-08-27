@@ -1,0 +1,22 @@
+# The tracked source is ~1.7 MB; .venv alone is 245 MB. Excluding it is what
+# keeps the build context small enough to be fast.
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.egg-info/
+
+tests/
+.localstorage/
+
+.env
+.env.*
+!.env.example
+
+.git/
+.gitignore
+*.md

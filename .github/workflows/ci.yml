@@ -1,0 +1,244 @@
+# Ledger AI CI
+#
+# Preserves every check Phases 1 and 2 established and adds the packaging
+# verification Phase 3 introduces. No paid services: Postgres and Redis run as
+# GitHub-hosted service containers, and images are built but never pushed.
+#
+# Actions are pinned to commit SHAs. A mutable tag like @v4 is a supply-chain
+# hole in a workflow that has repository credentials.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.12"
+  NODE_VERSION: "22"
+  # CI-only values. Nothing here is a real credential.
+  AUTH_SECRET: ci-only-secret-not-used-anywhere-else-000000
+  DEMO_USER_PASSWORD: ci-only-demo-password
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: Backend — ruff, mypy, pytest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: ledgerai
+          POSTGRES_PASSWORD: ledgerai
+          POSTGRES_DB: ledgerai
+        ports: ["5433:5432"]
+        options: >-
+          --health-cmd "pg_isready -U ledgerai -d ledgerai"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql+psycopg://ledgerai:ledgerai@localhost:5433/ledgerai
+      REDIS_URL: redis://localhost:6379/0
+      STORAGE_BACKEND: local
+      LOCAL_STORAGE_DIR: /tmp/ledgerai-ci-storage
+
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      # Receipt OCR is a real dependency, not a mock. The tests parse through a
+      # fake engine, but the preprocessing tests rasterize actual files.
+      - name: Install Tesseract
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y tesseract-ocr tesseract-ocr-eng
+          tesseract --version
+
+      - uses: astral-sh/setup-uv@887a942a15af3a7626099df99e897a18d9e5ab3a # v5.1.0
+        with:
+          version: "0.5.11"
+          enable-cache: true
+          cache-dependency-glob: apps/api/uv.lock
+
+      - name: Install dependencies from the lock file
+        working-directory: apps/api
+        # --frozen fails if uv.lock and pyproject.toml have drifted, so a
+        # dependency change without a re-lock cannot merge.
+        run: uv sync --frozen --extra dev
+
+      - name: Lint (ruff)
+        working-directory: apps/api
+        run: uv run ruff check ledgerai tests ../../scripts
+
+      - name: Type check (mypy)
+        working-directory: apps/api
+        run: uv run mypy ledgerai
+
+      - name: Tests (pytest)
+        working-directory: apps/api
+        run: uv run pytest -q
+
+  frontend:
+    name: Frontend — eslint, tsc, vitest, build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - name: Install dependencies from the lock file
+        working-directory: apps/web
+        run: npm ci
+
+      - name: Lint (eslint)
+        working-directory: apps/web
+        run: npm run lint
+
+      - name: Type check (tsc)
+        working-directory: apps/web
+        run: npm run typecheck
+
+      - name: Tests (vitest)
+        working-directory: apps/web
+        run: npm run test
+
+      - name: Production build
+        working-directory: apps/web
+        env:
+          NEXT_PUBLIC_API_URL: http://localhost:8000
+        run: npm run build
+
+  migrations:
+    name: Migrations from an empty database
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: ledgerai
+          POSTGRES_PASSWORD: ledgerai
+          POSTGRES_DB: ledgerai
+        ports: ["5433:5432"]
+        options: >-
+          --health-cmd "pg_isready -U ledgerai -d ledgerai"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql+psycopg://ledgerai:ledgerai@localhost:5433/ledgerai
+      REDIS_URL: redis://localhost:6379/0
+
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - uses: astral-sh/setup-uv@887a942a15af3a7626099df99e897a18d9e5ab3a # v5.1.0
+        with:
+          version: "0.5.11"
+          enable-cache: true
+          cache-dependency-glob: apps/api/uv.lock
+
+      - name: Install dependencies
+        working-directory: apps/api
+        run: uv sync --frozen
+
+      - name: Upgrade from empty
+        working-directory: apps/api
+        run: uv run alembic upgrade head
+
+      - name: Re-running is a no-op
+        working-directory: apps/api
+        run: uv run alembic upgrade head
+
+      - name: Downgrade to base and back up
+        working-directory: apps/api
+        # Proves every migration has a working downgrade, which is what makes a
+        # bad release recoverable.
+        run: |
+          uv run alembic downgrade base
+          uv run alembic upgrade head
+
+      - name: Models and schema agree
+        working-directory: apps/api
+        # An empty autogenerate diff means no one changed a model without
+        # writing the migration for it.
+        run: |
+          uv run alembic revision --autogenerate -m "ci drift check" --rev-id ci_drift
+          if grep -qE "op\.(create|drop|alter|add)_" alembic/versions/ci_drift_*.py; then
+            echo "::error::Models have drifted from the migrations."
+            cat alembic/versions/ci_drift_*.py
+            exit 1
+          fi
+          rm -f alembic/versions/ci_drift_*.py
+
+  docker:
+    name: Docker images build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - uses: docker/setup-buildx-action@c47758b77c9736f4b2ef4073d4d51994fabfe349 # v3.7.1
+
+      - name: Build the API image
+        uses: docker/build-push-action@48aba3b46d1b1fec4febb7c5d0c644b249a11355 # v6.10.0
+        with:
+          context: ./apps/api
+          file: ./apps/api/Dockerfile
+          tags: ledgerai-api:ci
+          load: true
+          push: false
+          cache-from: type=gha,scope=api
+          cache-to: type=gha,mode=max,scope=api
+
+      - name: Build the web image
+        uses: docker/build-push-action@48aba3b46d1b1fec4febb7c5d0c644b249a11355 # v6.10.0
+        with:
+          context: ./apps/web
+          file: ./apps/web/Dockerfile
+          build-args: NEXT_PUBLIC_API_URL=http://localhost:8000
+          tags: ledgerai-web:ci
+          load: true
+          push: false
+          cache-from: type=gha,scope=web
+          cache-to: type=gha,mode=max,scope=web
+
+      - name: Containers run as non-root
+        run: |
+          for image in ledgerai-api:ci ledgerai-web:ci; do
+            uid=$(docker run --rm --entrypoint sh "$image" -c 'id -u')
+            echo "$image runs as uid $uid"
+            if [ "$uid" = "0" ]; then
+              echo "::error::$image runs as root"
+              exit 1
+            fi
+          done
+
+      - name: The API image can actually run the app
+        run: |
+          docker run --rm --entrypoint sh ledgerai-api:ci -c \
+            'tesseract --version >/dev/null && python -c "from ledgerai.main import app"'
+          echo "API image imports the application and has Tesseract"

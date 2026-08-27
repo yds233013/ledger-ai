@@ -10,6 +10,7 @@ import type {
   Capabilities,
   ConfirmResponse,
   CorrectionImpact,
+  DeletionResult,
   Dashboard,
   Facets,
   Page,
@@ -259,6 +260,48 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(body),
     }),
+
+  /* --- data lifecycle --------------------------------------------------- */
+
+  /**
+   * Download the export.
+   *
+   * Fetched as a blob rather than linked directly: the endpoint needs the
+   * bearer token, which an <a href> cannot carry.
+   */
+  exportData: async (): Promise<{ blob: Blob; filename: string }> => {
+    const token = await getAccessToken();
+    const response = await fetch(`${API_URL}/api/settings/export`, {
+      headers: { Authorization: `Bearer ${token}` },
+      cache: 'no-store',
+    });
+    if (!response.ok) {
+      throw new ApiError(
+        response.status === 429
+          ? 'You have requested several exports recently. Please wait a few minutes.'
+          : `Export failed (${response.status}).`,
+        response.status,
+      );
+    }
+    const disposition = response.headers.get('content-disposition') ?? '';
+    const match = /filename="([^"]+)"/.exec(disposition);
+    return { blob: await response.blob(), filename: match?.[1] ?? 'ledgerai-export.zip' };
+  },
+
+  deleteData: (dryRun = false) =>
+    request<DeletionResult>('/api/settings/delete-data', {
+      method: 'POST',
+      body: JSON.stringify({ confirmation: 'DELETE', dry_run: dryRun }),
+    }),
+
+  deleteAccount: (dryRun = false) =>
+    request<DeletionResult>('/api/settings/delete-account', {
+      method: 'POST',
+      body: JSON.stringify({ confirmation: 'DELETE', dry_run: dryRun }),
+    }),
+
+  deleteReceipt: (id: string) =>
+    request<{ message: string }>(`/api/receipts/${id}`, { method: 'DELETE' }),
 
   /* --- alerts ----------------------------------------------------------- */
 

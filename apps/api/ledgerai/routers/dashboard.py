@@ -103,6 +103,9 @@ class DashboardOut(BaseModel):
     pending_receipt_count: int
     alerts_enabled: bool = True
     open_alert_count: int = 0
+    # How many of open_alert_count this response actually carries, so the UI
+    # can say "showing 8 of 30" rather than implying it has them all.
+    alerts_shown: int = 0
     alerts: list[AlertOut] = []
     alerts_note: str = (
         "Alerts describe unusual patterns in your own uploaded data. They are not "
@@ -374,6 +377,7 @@ async def get_dashboard(user: CurrentUser, session: DbSession) -> DashboardOut:
         currency_note=currency_note,
         pending_receipt_count=pending_receipts,
         open_alert_count=open_alert_count,
+        alerts_shown=len(alert_rows),
         alerts=[
             AlertOut(
                 id=str(alert.id),

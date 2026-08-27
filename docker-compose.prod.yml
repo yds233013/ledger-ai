@@ -1,0 +1,139 @@
+# Ledger AI — production-shaped stack, for local verification of the images.
+#
+# The point of this file is to prove the production containers actually work:
+# built from the same Dockerfiles that would be deployed, running as non-root,
+# with health checks and a migration step that runs exactly once.
+#
+#   make prod-build && make prod-up
+#
+# Not a deployment target. Railway runs these images with managed Postgres and
+# Redis; this reproduces the shape locally.
+
+x-api-env: &api-env
+  ENVIRONMENT: production
+  DATABASE_URL: postgresql+psycopg://ledgerai:${POSTGRES_PASSWORD:-ledgerai-local-dev}@postgres:5432/ledgerai
+  REDIS_URL: redis://redis:6379/0
+  AUTH_SECRET: "${AUTH_SECRET:?set AUTH_SECRET first (openssl rand -base64 32)}"
+  ACCESS_TOKEN_TTL_MINUTES: 15
+  # A volume, not object storage: one disk shared by the API and the worker.
+  # The S3 adapter remains the documented path for horizontal scaling.
+  STORAGE_BACKEND: local
+  LOCAL_STORAGE_DIR: /app/.localstorage
+  CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+  DEMO_USER_EMAIL: ${DEMO_USER_EMAIL:-demo@ledgerai.local}
+  DEMO_USER_PASSWORD: "${DEMO_USER_PASSWORD:?set DEMO_USER_PASSWORD first}"
+  AI_ENABLED: ${AI_ENABLED:-false}
+  OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  ENABLE_ACCESS_LOG: "false"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ledgerai
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ledgerai-local-dev}
+      POSTGRES_DB: ledgerai
+    volumes:
+      - prod-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ledgerai -d ledgerai"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - prod-redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  # Migrations run HERE and nowhere else.
+  #
+  # If every replica ran `alembic upgrade head` on boot they would race, and a
+  # partially-applied migration is the worst possible state. This is a one-shot
+  # release step: it runs to completion, and the services that need the schema
+  # wait for it to succeed. In Railway the equivalent is a pre-deploy command
+  # on the API service only.
+  migrate:
+    image: ledgerai-api:latest
+    build:
+      context: ./apps/api
+      dockerfile: Dockerfile
+    environment: *api-env
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    image: ledgerai-api:latest
+    build:
+      context: ./apps/api
+      dockerfile: Dockerfile
+    environment: *api-env
+    ports:
+      - "${API_PORT:-8000}:8000"
+    volumes:
+      - prod-receipts:/app/.localstorage
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    # SIGTERM drains in-flight requests; give it room before SIGKILL.
+    stop_grace_period: 30s
+
+  worker:
+    image: ledgerai-worker:latest
+    build:
+      context: ./apps/api
+      dockerfile: Dockerfile.worker
+    environment: *api-env
+    volumes:
+      # The same disk the API writes receipts to.
+      - prod-receipts:/app/.localstorage
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    # Warm shutdown: RQ finishes the job in flight rather than abandoning a
+    # half-processed receipt.
+    stop_grace_period: 60s
+
+  web:
+    image: ledgerai-web:latest
+    build:
+      context: ./apps/web
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+    environment:
+      NODE_ENV: production
+      AUTH_SECRET: "${AUTH_SECRET:?set AUTH_SECRET first}"
+      AUTH_TRUST_HOST: "true"
+      NEXTAUTH_URL: ${NEXTAUTH_URL:-http://localhost:3000}
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+    ports:
+      - "${WEB_PORT:-3000}:3000"
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+    stop_grace_period: 30s
+
+volumes:
+  prod-pgdata:
+  prod-redisdata:
+  prod-receipts:

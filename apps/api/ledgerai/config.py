@@ -7,13 +7,32 @@ from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# apps/api/ledgerai/config.py -> repo root is three parents up.
-REPO_ROOT = Path(__file__).resolve().parents[3]
+
+def _find_env_file() -> Path | None:
+    """Locate the repo-root .env, if there is one.
+
+    In development this file lives three directories above the package. In a
+    container the package sits at /app/ledgerai with no repo above it and
+    configuration arrives as real environment variables, so walking up must not
+    assume a depth that isn't there.
+    """
+    here = Path(__file__).resolve()
+    for parent in here.parents:
+        candidate = parent / ".env"
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+ENV_FILE = _find_env_file()
+# Kept for callers that resolve paths relative to the project (the local
+# storage backend). Falls back to the working directory inside a container.
+REPO_ROOT = ENV_FILE.parent if ENV_FILE else Path.cwd()
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=REPO_ROOT / ".env",
+        env_file=ENV_FILE,
         env_file_encoding="utf-8",
         extra="ignore",
         case_sensitive=False,
@@ -56,6 +75,15 @@ class Settings(BaseSettings):
     cors_origins: str = "http://localhost:3000"
     max_upload_bytes: int = 10 * 1024 * 1024
     log_level: str = "INFO"
+    # "development" | "production". Production tightens startup checks and
+    # turns off request access logging.
+    environment: str = "development"
+    # Only trust X-Forwarded-For when a known proxy sits in front; otherwise a
+    # caller can forge it and sidestep rate limits.
+    trust_proxy_headers: bool = False
+    # Request access logs record full query strings, which for this API include
+    # merchant search terms. Off by default in production.
+    enable_access_log: bool = True
     analysis_cache_ttl_seconds: int = 3600
 
     @property
@@ -71,6 +99,10 @@ class Settings(BaseSettings):
     def async_database_url(self) -> str:
         """Async URL for the FastAPI request path (psycopg3 async)."""
         return self.database_url
+
+    @property
+    def is_production(self) -> bool:
+        return self.environment.strip().lower() == "production"
 
     @property
     def ai_available(self) -> bool:
