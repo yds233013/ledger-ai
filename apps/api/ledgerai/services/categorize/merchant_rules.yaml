@@ -1,0 +1,104 @@
+# Deterministic merchant -> category rules (stage 2 of the categorizer).
+# `pattern` is matched as a substring against the normalized merchant key.
+# Lower priority wins. This file is seeded into the merchant_rules table.
+#
+# All merchant names below are real-world brands used only as *pattern strings*
+# for classification. No brand is contacted, integrated with, or endorsed.
+
+groceries:
+  [whole foods, trader joes, safeway, kroger, publix, aldi, wegmans, sprouts,
+   heb, ralphs, food lion, giant eagle, stop shop, harris teeter, costco,
+   sams club, instacart, grocery outlet, fresh market]
+
+dining:
+  [starbucks, dunkin, blue bottle, peets coffee, chipotle, sweetgreen, panera,
+   mcdonalds, burger king, wendys, taco bell, subway sandwiches, dominos,
+   pizza hut, papa johns, shake shack, five guys, in n out, chick fil a,
+   olive garden, cheesecake factory, doordash, uber eats, grubhub, postmates,
+   seamless, caviar, panda express, kfc, popeyes, dairy queen, sonic drive,
+   jimmy johns, potbelly, noodles company, cava, dig inn, pret a manger,
+   la colombe, philz coffee, caribou coffee, tim hortons, restaurant, cafe,
+   coffee, bakery, brewing, tavern, bistro, grill, pub]
+
+transport:
+  [uber, lyft, shell, chevron, exxon, mobil, bp, texaco, valero, arco, sunoco,
+   citgo, marathon petroleum, speedway, wawa, quiktrip, parking, spothero,
+   metro transit, mta, bart, caltrain, amtrak, septa, cta, wmata, zipcar,
+   turo, hertz, avis, enterprise rent, budget rent, gas station, toll,
+   ez pass, fastrak, car wash, jiffy lube, valvoline, autozone, oreilly auto,
+   discount tire, les schwab]
+
+shopping:
+  [amazon, target, walmart, best buy, home depot, lowes, ikea, wayfair, etsy,
+   ebay, macys, nordstrom, kohls, tj maxx, marshalls, ross stores, old navy,
+   gap, banana republic, uniqlo, zara, h m, forever 21, lululemon, nike,
+   adidas, foot locker, rei, dicks sporting, bath body works, sephora, ulta,
+   michaels, joann, staples, office depot, container store, williams sonoma,
+   crate barrel, west elm, pottery barn, apple store, newegg, chewy, petco,
+   petsmart]
+
+subscriptions:
+  [netflix, spotify, hulu, disney plus, disneyplus, hbo max, max com, peacock,
+   paramount plus, apple tv, apple music, apple icloud, icloud, youtube premium,
+   amazon prime, audible, kindle unlimited, adobe, microsoft 365, office 365,
+   dropbox, notion, figma, canva, github, openai, anthropic, chatgpt, claude ai,
+   grammarly, 1password, lastpass, nordvpn, expressvpn, duolingo, masterclass,
+   coursera, udemy, skillshare, medium com, substack, patreon, new york times,
+   wall street journal, washington post, the athletic, strava, calm com,
+   headspace, ancestry, linkedin premium, zoom video, slack technologies]
+
+utilities:
+  [comcast, xfinity, spectrum, verizon, at t wireless, att wireless, t mobile,
+   tmobile, sprint, google fi, mint mobile, visible wireless, cox communications,
+   centurylink, frontier communications, pge, pacific gas, con edison,
+   duke energy, southern california edison, national grid, dominion energy,
+   xcel energy, ameren, dte energy, nicor, water district, waste management,
+   republic services, city utilities, electric company, internet service]
+
+housing:
+  [rent payment, apartment, property management, mortgage, hoa, landlord,
+   zillow rental, avail rent, buildium, appfolio, realpage, greystar,
+   equity residential, home insurance, renters insurance, storage unit,
+   public storage, extra space storage, cubesmart]
+
+health:
+  [cvs, walgreens, rite aid, pharmacy, quest diagnostics, labcorp, kaiser,
+   blue cross, blue shield, aetna, cigna, united healthcare, humana, dentist,
+   dental, optometry, vision center, warby parker, lenscrafters, planet fitness,
+   equinox, la fitness, gold gym, orangetheory, f45, crossfit, soulcycle,
+   peloton, classpass, barrys bootcamp, ymca, physical therapy, urgent care,
+   medical center, hospital, clinic, teladoc, hims hers, ro health, zocdoc]
+
+entertainment:
+  [amc theatres, regal cinemas, cinemark, alamo drafthouse, movie theater,
+   ticketmaster, stubhub, seatgeek, axs com, eventbrite, live nation,
+   steam games, steampowered, playstation, xbox, nintendo, epic games,
+   riot games, blizzard, humble bundle, twitch, patreon creator, bowling,
+   golf club, museum, aquarium, zoo, theme park, six flags, cedar point,
+   universal studios, disneyland, walt disney world, concert, comedy club]
+
+travel:
+  [united airlines, delta air, american airlines, southwest airlines,
+   jetblue, alaska airlines, spirit airlines, frontier airlines, airbnb,
+   vrbo, booking com, expedia, hotels com, priceline, kayak, marriott,
+   hilton, hyatt, ihg, wyndham, best western, holiday inn, motel, hostel,
+   travelocity, orbitz, tripadvisor, viator, get your guide, global entry,
+   tsa precheck, passport, currency exchange, baggage fee]
+
+income:
+  [payroll, direct deposit, salary, paycheck, employer, adp payroll, gusto,
+   paychex, workday payroll, interest paid, dividend, refund, reimbursement,
+   tax refund, irs treas, stripe payout, paypal transfer in]
+
+transfers:
+  [venmo, zelle, cash app, paypal, transfer to savings, transfer from,
+   online transfer, internal transfer, credit card payment, autopay,
+   card payment thank you, wire transfer, ach transfer, robinhood, coinbase,
+   fidelity, vanguard, schwab, etrade, betterment, wealthfront, acorns,
+   sofi invest, ally bank transfer]
+
+fees:
+  [overdraft fee, service charge, monthly maintenance fee, atm fee,
+   foreign transaction fee, late fee, annual fee, interest charge,
+   finance charge, returned item fee, wire fee, nsf fee, cash advance fee,
+   account fee, minimum balance fee]

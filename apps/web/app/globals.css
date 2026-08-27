@@ -1,0 +1,128 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* An undefined custom property invalidates the whole font-family
+       declaration, which silently falls back to the browser's serif. */
+    --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+      "Helvetica Neue", Arial, sans-serif;
+
+    --surface: 255 255 255;
+    --surface-raised: 255 255 255;
+    --surface-sunken: 248 250 252;
+    --line: 226 232 240;
+    --ink: 15 23 42;
+    --ink-muted: 71 85 105;
+    --ink-faint: 148 163 184;
+    --brand: 79 70 229;
+    --brand-soft: 238 242 255;
+    --positive: 5 150 105;
+    --negative: 220 38 38;
+    --caution: 217 119 6;
+
+    /* --- Chart palette -------------------------------------------------
+       Validated categorical order (adjacent CVD ΔE 9.1, normal-vision 19.6
+       in light; 8.4 / 19.3 in dark). Slots are assigned in fixed order and
+       never cycled; past seven entities a chart folds the tail into "Other".
+       Single-measure charts (spend by category, trend, period comparison)
+       deliberately use ONE colour — the axis labels already carry identity,
+       so per-bar colour would be redundant encoding. */
+    --viz-1: #2a78d6;
+    --viz-2: #eb6834;
+    --viz-3: #1baf7a;
+    --viz-4: #eda100;
+    --viz-5: #e87ba4;
+    --viz-6: #008300;
+    --viz-7: #4a3aa7;
+    --viz-muted: #94a3b8;
+    --viz-grid: #e2e8f0;
+    --viz-axis: #64748b;
+    --viz-surface: #ffffff;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --surface: 15 23 42;
+      --surface-raised: 30 41 59;
+      --surface-sunken: 2 6 23;
+      --line: 51 65 85;
+      --ink: 248 250 252;
+      --ink-muted: 148 163 184;
+      --ink-faint: 100 116 139;
+      --brand: 129 140 248;
+      --brand-soft: 30 41 59;
+      --positive: 52 211 153;
+      --negative: 248 113 113;
+      --caution: 251 191 36;
+
+      /* Same seven hues, re-stepped for the dark surface — not an auto-flip. */
+      --viz-1: #3987e5;
+      --viz-2: #d95926;
+      --viz-3: #199e70;
+      --viz-4: #c98500;
+      --viz-5: #d55181;
+      --viz-6: #008300;
+      --viz-7: #9085e9;
+      --viz-muted: #64748b;
+      --viz-grid: #334155;
+      --viz-axis: #94a3b8;
+      --viz-surface: #1e293b;
+    }
+  }
+
+  html {
+    -webkit-font-smoothing: antialiased;
+  }
+
+  body {
+    @apply bg-surface-sunken text-ink;
+  }
+
+  *:focus-visible {
+    @apply outline-none ring-2 ring-brand ring-offset-2 ring-offset-surface;
+  }
+}
+
+@layer components {
+  .card {
+    @apply rounded-xl border border-line bg-surface-raised shadow-sm;
+  }
+
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg px-3.5 py-2
+           text-sm font-medium transition-colors disabled:cursor-not-allowed
+           disabled:opacity-50;
+  }
+
+  .btn-primary {
+    @apply btn bg-brand text-white hover:opacity-90;
+  }
+
+  .btn-secondary {
+    @apply btn border border-line bg-surface-raised text-ink hover:bg-surface-sunken;
+  }
+
+  .btn-ghost {
+    @apply btn text-ink-muted hover:bg-surface-sunken hover:text-ink;
+  }
+
+  .input {
+    @apply w-full rounded-lg border border-line bg-surface px-3 py-2 text-sm
+           text-ink placeholder:text-ink-faint focus:border-brand;
+  }
+
+  .label {
+    @apply mb-1.5 block text-xs font-medium uppercase tracking-wide text-ink-muted;
+  }
+
+  .chip {
+    @apply inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium;
+  }
+}
+
+/* Recharts inherits the page font rather than shipping its own. */
+.recharts-wrapper text {
+  font-family: inherit;
+}

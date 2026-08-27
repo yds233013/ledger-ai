@@ -1,0 +1,59 @@
+# Local development infrastructure for Ledger AI.
+# App processes (Next.js, FastAPI, RQ worker) run natively for fast reload —
+# see the Makefile. Production packaging lives in docker-compose.prod.yml.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: ledgerai-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-ledgerai}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ledgerai}
+      POSTGRES_DB: ${POSTGRES_DB:-ledgerai}
+    ports:
+      # Host 5433 — a native Postgres already owns 5432 on this machine.
+      - "5433:5432"
+    volumes:
+      - ledgerai-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-ledgerai} -d ${POSTGRES_DB:-ledgerai}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: ledgerai-redis
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - ledgerai-redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  minio:
+    image: minio/minio:latest
+    container_name: ledgerai-minio
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY:-ledgerai}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY:-ledgerai-secret}
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - ledgerai-miniodata:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  ledgerai-pgdata:
+  ledgerai-redisdata:
+  ledgerai-miniodata:

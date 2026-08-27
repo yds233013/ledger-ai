@@ -1,0 +1,110 @@
+"""String enums shared by the ORM models and the API schemas.
+
+These are stored as VARCHAR with a CHECK-style application constraint rather
+than native Postgres ENUMs: adding a value later is a code change, not a
+migration that locks the table.
+"""
+
+from __future__ import annotations
+
+from enum import StrEnum
+
+
+class UploadKind(StrEnum):
+    CSV = "csv"
+    IMAGE = "image"
+
+
+class UploadStatus(StrEnum):
+    RECEIVED = "received"
+    PROCESSING = "processing"
+    COMPLETE = "complete"
+    FAILED = "failed"
+    DUPLICATE = "duplicate"  # identical bytes already ingested for this user
+
+
+class JobStage(StrEnum):
+    """The user-visible pipeline. Order matters — the UI renders it as steps."""
+
+    QUEUED = "queued"
+    EXTRACTING = "extracting"
+    NORMALIZING = "normalizing"
+    CATEGORIZING = "categorizing"
+    COMPLETE = "complete"
+    FAILED = "failed"
+
+
+JOB_STAGE_ORDER: list[JobStage] = [
+    JobStage.QUEUED,
+    JobStage.EXTRACTING,
+    JobStage.NORMALIZING,
+    JobStage.CATEGORIZING,
+    JobStage.COMPLETE,
+]
+
+
+class CorrectionField(StrEnum):
+    MERCHANT = "merchant"
+    CATEGORY = "category"
+
+
+class CorrectionScope(StrEnum):
+    """How a correction was applied.
+
+    Individual corrections are protected from later bulk changes: if the user
+    deliberately set one row to something different, a subsequent
+    "apply to all matching" must not silently overwrite that decision.
+    """
+
+    INDIVIDUAL = "individual"
+    BULK = "bulk"
+
+
+class AlertType(StrEnum):
+    DUPLICATE = "duplicate"
+    NEAR_DUPLICATE = "near_duplicate"
+    UNUSUAL_AMOUNT = "unusual_amount"
+    NEW_MERCHANT = "new_merchant"
+
+
+class AlertSeverity(StrEnum):
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+
+
+class AlertStatus(StrEnum):
+    OPEN = "open"
+    DISMISSED = "dismissed"
+    RESOLVED = "resolved"
+
+
+class AnalysisStatus(StrEnum):
+    RUNNING = "running"
+    COMPLETE = "complete"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class AnalysisStepName(StrEnum):
+    UNDERSTAND = "understand"
+    SELECT = "select"
+    AGGREGATE = "aggregate"
+    VISUALIZE = "visualize"
+    EXPLAIN = "explain"
+
+
+class StepStatus(StrEnum):
+    STARTED = "started"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class PlannerKind(StrEnum):
+    RULES = "rules"
+    LLM = "llm"
+
+
+class NarratorKind(StrEnum):
+    TEMPLATE = "template"
+    LLM = "llm"

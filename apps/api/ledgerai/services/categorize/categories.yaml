@@ -1,0 +1,72 @@
+# System category taxonomy. Colors are the Ledger AI chart palette and are
+# reused by Recharts on the frontend so a category is the same color everywhere.
+- slug: groceries
+  name: Groceries
+  color: "#10b981"
+  icon: shopping-cart
+  sort_order: 10
+- slug: dining
+  name: Dining & Restaurants
+  color: "#f59e0b"
+  icon: utensils
+  sort_order: 20
+- slug: transport
+  name: Transport
+  color: "#3b82f6"
+  icon: car
+  sort_order: 30
+- slug: shopping
+  name: Shopping
+  color: "#8b5cf6"
+  icon: shopping-bag
+  sort_order: 40
+- slug: subscriptions
+  name: Subscriptions
+  color: "#ec4899"
+  icon: repeat
+  sort_order: 50
+- slug: utilities
+  name: Utilities
+  color: "#06b6d4"
+  icon: zap
+  sort_order: 60
+- slug: housing
+  name: Housing
+  color: "#6366f1"
+  icon: home
+  sort_order: 70
+- slug: health
+  name: Health & Fitness
+  color: "#14b8a6"
+  icon: heart-pulse
+  sort_order: 80
+- slug: entertainment
+  name: Entertainment
+  color: "#f43f5e"
+  icon: film
+  sort_order: 90
+- slug: travel
+  name: Travel
+  color: "#0ea5e9"
+  icon: plane
+  sort_order: 100
+- slug: income
+  name: Income
+  color: "#22c55e"
+  icon: trending-up
+  sort_order: 110
+- slug: transfers
+  name: Transfers & Payments
+  color: "#94a3b8"
+  icon: arrow-left-right
+  sort_order: 120
+- slug: fees
+  name: Fees & Charges
+  color: "#ef4444"
+  icon: alert-circle
+  sort_order: 130
+- slug: uncategorized
+  name: Uncategorized
+  color: "#64748b"
+  icon: help-circle
+  sort_order: 999
