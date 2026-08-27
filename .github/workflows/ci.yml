@@ -269,6 +269,25 @@ jobs:
             'rq worker --help >/dev/null             && python -c "from ledgerai.jobs.process_upload import process_upload"             && python -c "from ledgerai.jobs.retention import run_retention_sweep"             && tesseract --version >/dev/null'
           echo "worker image can start a worker and import its job modules"
 
+      - name: The scheduled sweeps are installed in the API image
+        run: |
+          # These are the commands the cron services run. Documented as
+          # `python scripts/...` they could never have worked: the image is
+          # built from apps/api and does not contain the repo-root scripts/.
+          docker run --rm --entrypoint sh ledgerai-api:ci -c \
+            'command -v ledgerai-demo-cleanup && command -v ledgerai-retention-sweep'
+          docker run --rm --entrypoint sh ledgerai-api:ci -c \
+            'python -m ledgerai.cli 2>&1 | grep -q "usage:"'
+          echo "both sweep entry points resolve on PATH"
+
+      - name: The API image can host a worker
+        run: |
+          # Railway's config-as-code has no build-target field, so the worker
+          # service runs the api image with its start command overridden.
+          docker run --rm --entrypoint sh ledgerai-api:ci -c \
+            'rq worker --help >/dev/null && touch "${HOME}/.ci-probe" && rm "${HOME}/.ci-probe"'
+          echo "api image can run rq with a writable HOME"
+
       - name: The worker HOME is writable by the non-root user
         run: |
           # rq keeps bookkeeping in HOME; a read-only HOME fails at runtime only.

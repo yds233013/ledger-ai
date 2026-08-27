@@ -204,6 +204,77 @@ class TestUvicornIsNotConfiguredToRewriteTheClient:
 
 
 # --------------------------------------------------------------------------
+# A proxy we are not configured to trust must be reported, not guessed at
+# --------------------------------------------------------------------------
+
+
+class TestAnUntrustedProxyIsReportedOnce:
+    """Refusing to believe the header is safe, but it is not free.
+
+    Behind an edge proxy with trust off, every caller resolves to the proxy's
+    address and shares a single bucket — so the public demo endpoint's budget
+    becomes the whole internet's budget rather than each visitor's. The limits
+    still hold; they just stop being per-visitor.
+
+    No hosting provider used here publishes an authoritative CIDR for its
+    inbound edge, and a guessed range fails silently in the same direction. So
+    the deployment reports the address it actually observes, once, and that
+    observed value is what TRUSTED_PROXY_IPS is set from.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _rearm(self):
+        ratelimit.reset_proxy_warning()
+        yield
+        ratelimit.reset_proxy_warning()
+
+    def test_a_forwarded_chain_we_ignore_is_reported(self, caplog) -> None:
+        with caplog.at_level("WARNING"):
+            client_identifier(make_request("10.1.2.3", "203.0.113.9"))
+        assert "10.1.2.3" in caplog.text
+        assert "TRUSTED_PROXY_IPS" in caplog.text
+
+    def test_the_report_names_the_proxy_and_not_the_caller(self, caplog) -> None:
+        """The chain's contents are user IP addresses. Only the hop count and
+        the peer — infrastructure, in this branch — may be recorded."""
+        with caplog.at_level("WARNING"):
+            client_identifier(make_request("10.1.2.3", "203.0.113.9, 198.51.100.4"))
+        assert "203.0.113.9" not in caplog.text
+        assert "198.51.100.4" not in caplog.text
+        assert "2 hop(s)" in caplog.text
+
+    def test_it_is_logged_once_not_once_per_request(self, caplog) -> None:
+        """A per-request warning would flood the log of the very deployment
+        that is already misconfigured."""
+        with caplog.at_level("WARNING"):
+            for n in range(25):
+                client_identifier(make_request("10.1.2.3", f"203.0.113.{n}"))
+        assert caplog.text.count("TRUSTED_PROXY_IPS") == 1
+
+    def test_a_direct_caller_is_not_reported(self, caplog) -> None:
+        """No forwarded header means no proxy, so there is nothing to fix —
+        and the peer would be a user's own address."""
+        with caplog.at_level("WARNING"):
+            client_identifier(make_request("203.0.113.7"))
+        assert "TRUSTED_PROXY_IPS" not in caplog.text
+
+    def test_a_correctly_configured_proxy_is_not_reported(
+        self, trust_proxy, caplog
+    ) -> None:
+        trust_proxy("10.0.0.0/8")
+        with caplog.at_level("WARNING"):
+            client_identifier(make_request("10.1.2.3", "203.0.113.9"))
+        assert "TRUSTED_PROXY_IPS" not in caplog.text
+
+    def test_reporting_does_not_change_the_identity(self, caplog) -> None:
+        """The diagnostic is observability only. It must not start trusting
+        the header it is complaining about."""
+        with caplog.at_level("WARNING"):
+            identity = client_identifier(make_request("10.1.2.3", "203.0.113.9"))
+        assert identity == "10.1.2.3"
+
+
+# --------------------------------------------------------------------------
 # Finding 3 — the counter and its expiry must be set atomically
 # --------------------------------------------------------------------------
 

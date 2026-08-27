@@ -6,8 +6,14 @@
 #
 #   make prod-build && make prod-up
 #
-# Not a deployment target. Railway runs these images with managed Postgres and
-# Redis; this reproduces the shape locally.
+# Not a deployment target. Railway runs these images with managed Postgres,
+# managed Redis and a Cloudflare R2 bucket; this reproduces the shape locally,
+# with the one deliberate difference noted on STORAGE_BACKEND below.
+
+# A project name of its own. Without it this stack inherits the directory name
+# and collides with docker-compose.yml, so `down --remove-orphans` here treats
+# the running development containers as orphans and removes them.
+name: ledgerai-prod
 
 x-api-env: &api-env
   ENVIRONMENT: production
@@ -15,8 +21,12 @@ x-api-env: &api-env
   REDIS_URL: redis://redis:6379/0
   AUTH_SECRET: "${AUTH_SECRET:?set AUTH_SECRET first (openssl rand -base64 32)}"
   ACCESS_TOKEN_TTL_MINUTES: 15
-  # A volume, not object storage: one disk shared by the API and the worker.
-  # The S3 adapter remains the documented path for horizontal scaling.
+  # A shared volume rather than object storage, and ONLY because this stack
+  # runs both containers on one machine, where a bind-mounted volume genuinely
+  # is shared. The deployed shape cannot do this: the API and the worker are
+  # separate services on separate filesystems and a Railway volume attaches to
+  # one of them, so production uses an R2 bucket through the same S3 adapter
+  # (STORAGE_BACKEND=minio). See docs/deployment.md, "Storage".
   STORAGE_BACKEND: local
   LOCAL_STORAGE_DIR: /app/.localstorage
   CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}

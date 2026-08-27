@@ -32,6 +32,13 @@ dependencies = [
     "openai>=1.60",
 ]
 
+# Installed into the virtualenv's bin directory, which is on PATH inside the
+# image. These are the commands a scheduler runs; the repo-root scripts/
+# directory does not exist in a deployed container.
+[project.scripts]
+ledgerai-demo-cleanup = "ledgerai.cli:demo_cleanup_main"
+ledgerai-retention-sweep = "ledgerai.cli:retention_sweep_main"
+
 [project.optional-dependencies]
 dev = [
     "pytest>=8.3",

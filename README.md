@@ -180,7 +180,7 @@ flowchart LR
     subgraph data["State"]
         P[("Postgres")]
         R[("Redis")]
-        S[("Volume / S3")]
+        S[("Object storage")]
     end
     B -->|"session cookie"| W
     B -->|"Bearer · REST + SSE"| A
@@ -403,6 +403,7 @@ is simply not rendered.
 | `make demo-sweep` | delete expired demo accounts |
 | `make prod-build` | build the three production images |
 | `make prod-smoke` | verify the production containers |
+| `make lock` | re-resolve `apps/api/uv.lock` |
 
 ### Production images
 
@@ -420,16 +421,29 @@ docker build --target api    -t ledgerai-api    apps/api
 docker build --target worker -t ledgerai-worker apps/api
 ```
 
-Deployment, environment variables, migrations, health checks, scheduling,
-rollback and backups are documented in
-**[docs/deployment.md](docs/deployment.md)**.
+The scheduled sweeps are console scripts installed into the image, so they can
+be verified in the container that will actually run them:
+
+```bash
+docker run --rm --env-file .env ledgerai-api ledgerai-demo-cleanup
+docker run --rm --env-file .env ledgerai-api ledgerai-retention-sweep
+```
+
+Both print a JSON report and exit non-zero on failure. Invoking them as
+`python scripts/…` cannot work in a container — the repository-root `scripts/`
+directory is not in the build context.
+
+Deployment, environment variables, storage, proxy trust, migrations, health
+checks, scheduling, rollback and backups are documented in
+**[docs/deployment.md](docs/deployment.md)**; the per-service Railway
+configuration is in **[railway/README.md](railway/README.md)**.
 
 ---
 
 ## Testing
 
 ```bash
-make test      # 594 backend tests · 192 frontend tests
+make test      # 656 backend tests · 192 frontend tests
 make lint      # ruff · mypy · eslint · tsc --noEmit
 ```
 
@@ -476,8 +490,16 @@ not more.
 - **Not deployed.** The deployment configuration and documentation are complete
   and the images are verified locally, but no hosting account exists, nothing is
   provisioned, and no GitHub OAuth application has been created.
-- **Storage on a volume does not scale horizontally.** The S3 adapter exists and
-  is a configuration change; the volume is the deliberate choice for a demo.
+- **Receipt images are stored unencrypted at rest.** Object storage encrypts
+  the disk beneath them, but Ledger AI adds no envelope encryption of its own,
+  so anyone with bucket credentials can read a receipt. Per-user encryption is
+  real work, not a config flag, and it is not done.
+- **Rate limits are per-visitor only once a proxy address is configured.**
+  Behind a platform edge that no provider publishes a trustworthy IP range for,
+  every caller resolves to the edge and shares one budget until
+  `TRUSTED_PROXY_IPS` is set from an address the deployment reports. The limits
+  hold either way; they are collective rather than individual in between. See
+  [docs/deployment.md](docs/deployment.md#proxy-trust).
 
 ### Deliberately not built
 
@@ -502,7 +524,8 @@ integration, not an inference available from a bank statement.
 | [docs/api.md](docs/api.md) | Every operation, what is public, and error semantics |
 | [docs/ai-usage.md](docs/ai-usage.md) | What the model sees, what it never sees, and every fallback |
 | [docs/security.md](docs/security.md) | Isolation, auth, demo expiry, OAuth linking, rate limiting, lifecycle |
-| [docs/deployment.md](docs/deployment.md) | Railway shape, variables, health checks, rollback, backups |
+| [docs/deployment.md](docs/deployment.md) | Railway shape, variables, storage, proxy trust, health checks, rollback, backups |
+| [railway/README.md](railway/README.md) | Per-service deployment configuration and the settings that cannot live in it |
 
 ---
 
@@ -514,3 +537,14 @@ used as plausible labels only — nothing is contacted, integrated or represente
 Accounts are prefixed `SANDBOX —` with `0000`-series masks, descriptions carry a
 `[SYNTHETIC]` marker, and the sample receipts are generated images stamped
 **NOT A REAL RECEIPT**.
+
+---
+
+## License
+
+[MIT](LICENSE) © 2026 Yash Shah.
+
+The synthetic sample data, generated receipt images and screenshots in `docs/`
+are covered by the same licence. Merchant names appearing in them are
+real-world brands used as plausible labels for fabricated transactions; no
+affiliation, integration or endorsement is implied.

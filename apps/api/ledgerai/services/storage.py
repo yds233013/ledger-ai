@@ -67,18 +67,40 @@ class S3Storage(Storage):
         self._ensure_bucket()
 
     def _ensure_bucket(self) -> None:
+        """Confirm the bucket is usable, creating it only outside production.
+
+        Auto-creation exists so `make up` produces a working MinIO bucket with
+        no manual step. It is wrong in production twice over: the bucket is
+        infrastructure that should already exist with its own lifecycle and
+        retention policy, and a credential scoped to one bucket — the
+        recommended shape for a Cloudflare R2 API token — has no CreateBucket
+        permission, so attempting it turns a clear "bucket missing" into a
+        confusing "access denied".
+        """
         try:
             self._client.head_bucket(Bucket=self._bucket)
-        except ClientError:
-            try:
-                self._client.create_bucket(Bucket=self._bucket)
-                logger.info("Created bucket %s", self._bucket)
-            except ClientError as exc:  # already exists / race
-                if exc.response.get("Error", {}).get("Code") not in {
-                    "BucketAlreadyOwnedByYou",
-                    "BucketAlreadyExists",
-                }:
-                    raise StorageError(f"Cannot create bucket {self._bucket}: {exc}") from exc
+            return
+        except (ClientError, BotoCoreError) as exc:
+            if settings.is_production:
+                raise StorageError(
+                    f"Bucket {self._bucket!r} is not reachable with the configured "
+                    "credentials. Check S3_ENDPOINT_URL, S3_BUCKET, S3_REGION and the "
+                    "access key pair."
+                ) from exc
+            head_failure = exc
+
+        try:
+            self._client.create_bucket(Bucket=self._bucket)
+            logger.info("Created bucket %s", self._bucket)
+        except ClientError as exc:  # already exists / race
+            if exc.response.get("Error", {}).get("Code") not in {
+                "BucketAlreadyOwnedByYou",
+                "BucketAlreadyExists",
+            }:
+                raise StorageError(f"Cannot create bucket {self._bucket}: {exc}") from exc
+        except BotoCoreError as exc:
+            # The endpoint is unreachable rather than the bucket being absent.
+            raise StorageError(f"Cannot reach object storage: {head_failure}") from exc
 
     def put(self, key: str, data: bytes, content_type: str) -> None:
         _assert_safe_key(key)
@@ -164,8 +186,32 @@ class LocalStorage(Storage):
 _storage: Storage | None = None
 
 
+def reset_storage(storage: Storage | None = None) -> None:
+    """Inject a backend, or clear the cached one. Used by tests.
+
+    Mirrors security.ratelimit.reset_limiter: the singleton is chosen from
+    settings on first use, so a test that varies STORAGE_BACKEND or
+    ENVIRONMENT has to be able to discard it.
+    """
+    global _storage
+    _storage = storage
+
+
 def get_storage() -> Storage:
-    """Process-wide storage singleton, chosen by STORAGE_BACKEND."""
+    """Process-wide storage singleton, chosen by STORAGE_BACKEND.
+
+    The fallback to local disk is a **development** convenience: someone who
+    cloned the repo without Docker still gets a working upload path.
+
+    In production it would be silent data loss of the worst kind. The API and
+    the worker are separate containers with separate filesystems, so falling
+    back would have the API write a receipt to its own disk and the worker look
+    for it on another — every OCR job failing with a missing file, every stored
+    image unreadable, and the container's disk discarded on the next deploy.
+    Nothing in the interface would report a problem, because from the
+    application's point of view the write succeeded. Production fails loudly
+    instead.
+    """
     global _storage
     if _storage is None:
         if settings.storage_backend == "local":
@@ -174,6 +220,13 @@ def get_storage() -> Storage:
             try:
                 _storage = S3Storage()
             except StorageError:
+                if settings.is_production:
+                    logger.critical(
+                        "Object storage is unavailable and STORAGE_BACKEND is not "
+                        "'local'. Refusing to fall back to container-local disk in "
+                        "production: the API and worker do not share one."
+                    )
+                    raise
                 logger.warning("MinIO/S3 unavailable — falling back to local storage")
                 _storage = LocalStorage()
     return _storage

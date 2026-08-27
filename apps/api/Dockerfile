@@ -64,6 +64,17 @@ ENV PATH="/app/.venv/bin:${PATH}" \
     ENVIRONMENT=production \
     API_PORT=8000
 
+# Queue name and HOME live on the shared base, not just the worker stage.
+#
+# Docker does not derive HOME from /etc/passwd for a USER instruction, and the
+# rq CLI writes its own bookkeeping there. Railway's config-as-code has no
+# field for a Docker build target, so the worker service there runs THIS image
+# — the default `api` stage — with its start command overridden. That only
+# works if the shared base is already capable of hosting a worker, so the two
+# variables a worker needs are set once, here, for every stage.
+ENV RQ_QUEUE=ledgerai \
+    HOME=/home/ledgerai
+
 # Receipt files when STORAGE_BACKEND=local. Created here so the directory
 # exists and is writable before any volume is mounted over it.
 RUN mkdir -p /app/.localstorage && chown ledgerai:ledgerai /app/.localstorage
@@ -74,12 +85,14 @@ USER ledgerai
 
 
 # ---------- worker ----------
-# Same base as the API so OCR behaves identically. In the Railway deployment
-# the two run side by side and share a storage volume.
+# Same base as the API so OCR behaves identically. The two run side by side and
+# read the same receipts out of one object-storage bucket — not a shared disk,
+# which separate services do not have. Compose and CI build this target
+# explicitly; Railway cannot select a build target and runs the `api` stage
+# with the worker start command instead.
 FROM runtime AS worker
 
-ENV RQ_QUEUE=ledgerai \
-    HOME=/home/ledgerai
+# RQ_QUEUE and HOME are inherited from `runtime`; see the note there.
 
 # A worker has no port, so liveness is "can it still reach Redis".
 HEALTHCHECK --interval=60s --timeout=10s --start-period=20s --retries=3 \

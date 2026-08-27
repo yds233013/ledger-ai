@@ -134,6 +134,52 @@ def resolve_client_ip(peer: str, forwarded_header: str) -> str:
     return peer
 
 
+# Logged at most once per process. A per-request warning would be a log flood
+# on exactly the deployment that is already misconfigured.
+_warned_about_untrusted_proxy = False
+
+
+def _warn_once_about_untrusted_proxy(peer: str, forwarded_header: str) -> None:
+    """Report a proxy in front of us that we are not configured to trust.
+
+    Existence of a forwarded chain we are ignoring means every caller behind
+    that proxy shares one rate-limit bucket — the limits still hold, but they
+    hold collectively, which for the public demo endpoint means the whole
+    internet shares one budget.
+
+    This exists because no hosting provider used by this project publishes a
+    stable, authoritative CIDR for its inbound edge, and guessing one is worse
+    than not setting it. The address logged here is the *proxy's*, observed
+    from the deployment itself, and it is the value TRUSTED_PROXY_IPS wants.
+
+    Only the peer and the chain's length are recorded. The chain's contents are
+    caller addresses; the peer, in the branch that reaches this function, is
+    infrastructure rather than a user.
+    """
+    global _warned_about_untrusted_proxy
+    if _warned_about_untrusted_proxy:
+        return
+    _warned_about_untrusted_proxy = True
+
+    hops = len([part for part in forwarded_header.split(",") if part.strip()])
+    logger.warning(
+        "Rate limits are keyed by the socket peer %s, but requests carry an "
+        "X-Forwarded-For chain of %d hop(s), so every caller behind that proxy "
+        "shares one budget. If %s is a proxy you operate, set "
+        "TRUST_PROXY_HEADERS=true and TRUSTED_PROXY_IPS to its address or CIDR. "
+        "Do not guess the range — this is the address to use.",
+        peer,
+        hops,
+        peer,
+    )
+
+
+def reset_proxy_warning() -> None:
+    """Re-arm the once-per-process warning. Used by tests."""
+    global _warned_about_untrusted_proxy
+    _warned_about_untrusted_proxy = False
+
+
 def client_identifier(request: Request) -> str:
     """Best-effort caller identity.
 
@@ -146,7 +192,15 @@ def client_identifier(request: Request) -> str:
     peer = request.client.host if request.client else ""
     if not peer:
         return "unknown"
-    return resolve_client_ip(peer, request.headers.get("x-forwarded-for", ""))
+
+    forwarded_header = request.headers.get("x-forwarded-for", "")
+    # A forwarded chain we are not configured to look at is the signature of a
+    # deployment whose limits have silently collapsed to a single bucket. Say
+    # so once, with the address needed to fix it.
+    if forwarded_header and not _is_trusted_proxy(peer):
+        _warn_once_about_untrusted_proxy(peer, forwarded_header)
+
+    return resolve_client_ip(peer, forwarded_header)
 
 
 # INCR and EXPIRE as two round-trips is the classic broken limiter: anything

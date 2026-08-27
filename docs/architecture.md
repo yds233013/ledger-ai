@@ -15,7 +15,7 @@ flowchart LR
     subgraph data["State"]
         P[("Postgres<br/>every durable record")]
         R[("Redis<br/>queue · cache · rate limits")]
-        S[("Volume or S3<br/>receipt files")]
+        S[("Object storage<br/>receipt files")]
     end
 
     B -->|"HTTPS · session cookie"| W
@@ -244,7 +244,7 @@ non-optional predicate. Two users with the same merchant name have the same
                  └────┬─────┘
                       │  receipts
                  ┌────▼─────────────┐
-                 │ volume or S3     │
+                 │ object storage   │
                  └──────────────────┘
 
    migrate ── one-shot, runs to completion before api and worker start

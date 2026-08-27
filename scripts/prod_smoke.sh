@@ -40,6 +40,38 @@ for image in ledgerai-api ledgerai-worker ledgerai-web; do
 done
 
 echo ""
+echo "== scheduled sweeps are invocable inside the image =="
+# The bug this pins: the sweeps were documented as `python scripts/...`, which
+# cannot resolve in a container built from the apps/api context. A cron entry
+# point that is not on PATH fails at 04:00 and is noticed weeks later.
+for command in ledgerai-demo-cleanup ledgerai-retention-sweep; do
+  if docker run --rm --entrypoint sh ledgerai-api:latest -c "command -v $command" >/dev/null; then
+    pass "$command is on PATH in the api image"
+  else
+    fail "$command is not installed in the api image"
+  fi
+done
+
+if docker run --rm --entrypoint sh ledgerai-api:latest \
+     -c 'ls scripts/ >/dev/null 2>&1'; then
+  fail "the repo scripts/ directory is in the image; the entry points are meant to replace it"
+else
+  pass "the image does not depend on the repo scripts/ directory"
+fi
+
+echo ""
+echo "== the api image can host a worker (Railway cannot select a build target) =="
+# Railway's config-as-code has no build-target field, so the worker service
+# runs the api image with its start command overridden. That only works if the
+# shared base carries RQ_QUEUE and a writable HOME.
+if docker run --rm --entrypoint sh ledgerai-api:latest \
+     -c 'rq worker --help >/dev/null && touch "$HOME/.probe" && rm "$HOME/.probe"'; then
+  pass "api image can run rq with a writable HOME"
+else
+  fail "api image cannot host a worker"
+fi
+
+echo ""
 echo "== stack starts, migrations run once =="
 $COMPOSE down -v --remove-orphans >/dev/null 2>&1 || true
 $COMPOSE up -d >/dev/null

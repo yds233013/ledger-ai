@@ -185,8 +185,22 @@ proxy. Consulting `X-Forwarded-For` requires **both** of:
 
 ```
 TRUST_PROXY_HEADERS=true
-TRUSTED_PROXY_IPS=10.0.0.0/8
+TRUSTED_PROXY_IPS=<an address observed from the deployment>
 ```
+
+**The allow-list must be measured, not looked up.** No hosting provider used
+here publishes a stable, authoritative CIDR for its inbound edge, and a range
+copied from a forum answer fails in the silent direction — it keeps the limits
+keyed on the proxy while looking configured. The API therefore logs the peer
+address it actually sees, once, when it is ignoring a forwarded chain, and that
+observed value is what the setting takes. The full procedure, and what to do
+when the address is not stable, is in
+[deployment.md](deployment.md#proxy-trust).
+
+Until it is set, the limits are collective rather than per-visitor: every
+caller behind the edge shares one budget. That is a deliberate trade — a
+shared limit that holds beats a per-visitor limit keyed on a forgeable
+header.
 
 The flag alone does nothing. "Trust the header whenever it is present" is
 precisely the bypass: an attacker rotates it and receives a fresh budget per
@@ -242,7 +256,11 @@ goes to the logs only.
   rather than cookies, so it is not CSRF-exposed, but a cookie-based deployment
   would need one.
 - No audit log beyond `transaction_corrections`.
-- Uploaded files are stored unencrypted at rest in MinIO. A production
+- Uploaded files are stored unencrypted at rest in object storage (MinIO
+  locally, Cloudflare R2 in production). The provider encrypts the underlying
+  disk; Ledger AI adds no envelope encryption of its own, so bucket credentials
+  are enough to read a receipt. The bucket is private and no code path
+  generates a public or presigned URL. A production
   deployment would enable bucket encryption.
 - Data export and deletion are not implemented (Phase 3). **Deleting a receipt
   and purging its stored original from object storage is part of that work** —
