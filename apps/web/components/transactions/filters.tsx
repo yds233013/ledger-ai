@@ -2,6 +2,7 @@
 
 import { Badge } from '@/components/ui/primitives';
 import type { TransactionQuery } from '@/lib/api-client';
+import { activeFilterCount } from '@/lib/transaction-query';
 import type { Facets } from '@/lib/types';
 
 export function TransactionFilters({
@@ -15,15 +16,9 @@ export function TransactionFilters({
   onChange: (patch: Partial<TransactionQuery>) => void;
   onReset: () => void;
 }) {
-  const activeCount = [
-    query.search,
-    query.category_slug,
-    query.account_id,
-    query.merchant,
-    query.review,
-    query.start_date,
-    query.end_date,
-  ].filter(Boolean).length;
+  // Counted in one shared place, so the "Clear N filters" number cannot drift
+  // from the set of filters actually being applied.
+  const activeCount = activeFilterCount(query);
 
   return (
     <div className="space-y-3 border-b border-line p-4">
@@ -146,11 +141,31 @@ export function TransactionFilters({
           </select>
         </div>
 
-        <div className="ml-auto flex items-center gap-3 pb-0.5">
+        <div className="ml-auto flex flex-wrap items-center gap-3 pb-0.5">
+          {/*
+            Two separate shortcuts, because they select genuinely different
+            rows: "need review" is low categorization confidence, "flagged" is
+            an open alert. A charge can easily be one without being the other.
+          */}
+          {facets.flagged_count > 0 ? (
+            <button
+              type="button"
+              aria-pressed={query.flagged === true}
+              onClick={() => onChange({ flagged: query.flagged ? undefined : true })}
+              className="text-xs font-medium hover:underline"
+            >
+              <Badge tone={query.flagged ? 'negative' : 'caution'}>
+                {facets.flagged_count} flagged
+              </Badge>
+            </button>
+          ) : null}
           {facets.review_count > 0 ? (
             <button
               type="button"
-              onClick={() => onChange({ review: 'needs_review' })}
+              aria-pressed={query.review === 'needs_review'}
+              onClick={() =>
+                onChange({ review: query.review === 'needs_review' ? undefined : 'needs_review' })
+              }
               className="text-xs font-medium text-caution hover:underline"
             >
               <Badge tone="caution">{facets.review_count} need review</Badge>

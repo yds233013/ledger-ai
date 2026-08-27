@@ -16,10 +16,30 @@ place.
 
 ### `users`
 `id` · `email` (unique) · `password_hash` (bcrypt) · `display_name` · `is_demo` ·
-`base_currency`.
+`base_currency` · `demo_expires_at` · `demo_request_key` (unique) ·
+`github_id` (unique).
 
 `base_currency` is what every aggregate is restricted to. Ledger AI does not
 convert between currencies, so a total that mixed them would be meaningless.
+
+Three columns carry the account's provenance, and the distinctions between them
+are load-bearing:
+
+| Column | Meaning |
+|---|---|
+| `is_demo` | holds synthetic data — true for the permanent local development account **and** for ephemeral per-visitor demos |
+| `demo_expires_at` | set **only** on an ephemeral demo. NULL means "not ephemeral". |
+| `demo_request_key` | provisioning idempotency key. UNIQUE, so two concurrent requests with the same key cannot both create an account. |
+| `github_id` | GitHub's immutable account id, when the account signs in with GitHub. UNIQUE, and the only key an OAuth identity is resolved by. |
+
+`demo_expires_at IS NOT NULL` is the single discriminator the cleanup sweep
+selects on. A real account has neither it nor `is_demo`; the permanent
+development demo user has `is_demo` with this column NULL. Neither can be
+reached by the sweep — see `docs/security.md`.
+
+`demo_request_key` and `github_id` are NULL for most rows. Postgres treats NULLs
+as distinct in a UNIQUE constraint, so neither index serialises ordinary
+sign-ups.
 
 ### `accounts`
 Synthetic bank/card accounts. `user_id` · `name` · `institution` ·

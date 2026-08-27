@@ -157,3 +157,92 @@ describe('ReceiptFieldEditor', () => {
     expect(screen.getByText('93% confidence')).toBeInTheDocument();
   });
 });
+
+/**
+ * A confirmed receipt is immutable — the API refuses edits to it.
+ *
+ * Before this was pinned, every field stayed live on a confirmed receipt while
+ * the save button was gone: a user could retype the whole form and have no way
+ * to save it, and the summary still said confirming "creates" an outflow that
+ * had already been created.
+ */
+describe('a confirmed receipt is read-only', () => {
+  function renderConfirmed() {
+    const receipt = makeReceipt({
+      status: 'confirmed',
+      transaction_id: 'tx-1',
+      link_mode: 'created',
+      needs_review: false,
+    });
+    render(
+      <ReceiptFieldEditor
+        receipt={receipt}
+        draft={draftFromReceipt(receipt)}
+        onChange={vi.fn()}
+        accounts={accounts}
+        categories={categories}
+      />,
+    );
+  }
+
+  it('disables every extracted field', () => {
+    renderConfirmed();
+    for (const id of [
+      'receipt-merchant', 'receipt-date', 'receipt-currency',
+      'receipt-subtotal', 'receipt-tax', 'receipt-tip', 'receipt-total',
+    ]) {
+      expect(document.getElementById(id)).toBeDisabled();
+    }
+  });
+
+  it('disables the account and category pickers', () => {
+    renderConfirmed();
+    expect(document.getElementById('receipt-account')).toBeDisabled();
+    expect(document.getElementById('receipt-category')).toBeDisabled();
+  });
+
+  it('never reports the change as still pending', () => {
+    renderConfirmed();
+    expect(screen.queryByText(/confirming it creates an outflow/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/was recorded as an outflow of/i)).toBeInTheDocument();
+  });
+
+  it('typing into a locked field cannot reach the change handler', async () => {
+    const onChange = vi.fn();
+    const receipt = makeReceipt({ status: 'confirmed', transaction_id: 'tx-1' });
+    render(
+      <ReceiptFieldEditor
+        receipt={receipt}
+        draft={draftFromReceipt(receipt)}
+        onChange={onChange}
+        accounts={accounts}
+        categories={categories}
+      />,
+    );
+
+    await userEvent.type(document.getElementById('receipt-merchant')!, 'Hijacked');
+    expect(onChange).not.toHaveBeenCalled();
+  });
+});
+
+describe('an unconfirmed receipt stays editable', () => {
+  it('leaves the fields enabled', () => {
+    // Positive control: the lock above must be caused by the status, not by
+    // the fields being disabled for everyone.
+    const receipt = makeReceipt({ status: 'needs_review' });
+    render(
+      <ReceiptFieldEditor
+        receipt={receipt}
+        draft={draftFromReceipt(receipt)}
+        onChange={vi.fn()}
+        accounts={accounts}
+        categories={categories}
+      />,
+    );
+
+    expect(document.getElementById('receipt-merchant')).toBeEnabled();
+    expect(document.getElementById('receipt-total')).toBeEnabled();
+    expect(document.getElementById('receipt-account')).toBeEnabled();
+    expect(screen.getByText(/confirming it creates an outflow/i)).toBeInTheDocument();
+  });
+});

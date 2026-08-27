@@ -7,6 +7,9 @@ from datetime import date
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy.orm import Session
+
+from tests.conftest import make_transaction
 
 pytestmark = pytest.mark.asyncio
 
@@ -727,3 +730,62 @@ async def test_profile_discloses_what_is_actually_available(
     assert "Permanent" in features["deletion"]["note"]
     assert features["connected_accounts"]["available"] is False
     assert "does not connect to any real" in features["connected_accounts"]["note"]
+
+
+class TestTrendWindow:
+    """The trend must not draw absent history as zero spending.
+
+    A young account — and every ephemeral demo account — holds less than a
+    full year. Plotting the months before its first transaction as $0 draws a
+    flat line along the axis, which reads as "you spent nothing for months"
+    rather than "there is no data here".
+    """
+
+    async def test_leading_empty_months_are_dropped(
+        self, client: AsyncClient, auth_headers: dict
+    ) -> None:
+        body = (await client.get("/api/dashboard", headers=auth_headers)).json()
+
+        assert body["trend"], "the fixture has spending, so the trend cannot be empty"
+        assert body["trend"][0]["value_cents"] != 0, (
+            "the first plotted month must be one that actually has data"
+        )
+
+    async def test_trend_months_matches_what_is_plotted(
+        self, client: AsyncClient, auth_headers: dict
+    ) -> None:
+        body = (await client.get("/api/dashboard", headers=auth_headers)).json()
+        assert body["trend_months"] == len(body["trend"])
+
+    async def test_the_window_never_exceeds_twelve_months(
+        self, client: AsyncClient, auth_headers: dict
+    ) -> None:
+        body = (await client.get("/api/dashboard", headers=auth_headers)).json()
+        assert 1 <= body["trend_months"] <= 12
+
+    async def test_a_gap_between_active_months_is_kept(
+        self, client: AsyncClient, auth_headers: dict, sync_db: Session, demo_data: dict
+    ) -> None:
+        """Only LEADING gaps are dropped.
+
+        A quiet month between two active ones is a real zero and must stay, or
+        the x-axis stops being a timeline.
+        """
+        from datetime import date as _date
+
+        make_transaction(
+            sync_db, demo_data["user"], demo_data["account"],
+            posted=_date(2026, 3, 4), cents=-5_000,
+            description="SANDBOX EARLY", merchant="Sandbox Early",
+            category_slug="shopping", index=900,
+        )
+        sync_db.commit()
+
+        body = (await client.get("/api/dashboard", headers=auth_headers)).json()
+        months = [point["month"] for point in body["trend"]]
+
+        # March is now the first month with data; April and May have none but
+        # sit between March and the later activity, so they must be present.
+        assert months[0].startswith("2026-03")
+        assert any(m.startswith("2026-04") for m in months)
+        assert any(m.startswith("2026-05") for m in months)

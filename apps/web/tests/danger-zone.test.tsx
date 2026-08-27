@@ -25,6 +25,13 @@ function preview(overrides: Partial<DeletionResult> = {}): DeletionResult {
     account_removed: false,
     total_rows: 712,
     rows_by_table: { transactions: 707, receipts: 4, alerts: 27, uploads: 0 },
+    table_labels: {
+      transactions: 'transactions',
+      receipts: 'receipts',
+      alerts: 'alerts',
+      uploads: 'uploaded files',
+    },
+    retained: ['your sign-in identity', 'your accounts', 'built-in categories'],
     storage_objects_removed: 0,
     cache_keys_removed: 0,
     queued_jobs_cancelled: 2,

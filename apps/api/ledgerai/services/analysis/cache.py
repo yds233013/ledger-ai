@@ -66,7 +66,12 @@ async def store_run_id(
         if user_id is not None:
             index = user_index_key(user_id)
             await client.sadd(index, key)
-            # The index must not outlive the entries it points at.
+            # The index must live AT LEAST as long as any entry it points at.
+            # purge_user_cache finds entries only through this set, so an index
+            # that expired first would orphan the entries added just before it
+            # — deleting an account would silently leave cached analyses behind
+            # until their own TTL ran out. Hence the deliberate 24x margin, and
+            # the refresh on every write.
             await client.expire(index, settings.analysis_cache_ttl_seconds * 24)
     except Exception:  # noqa: BLE001
         return
@@ -74,6 +79,28 @@ async def store_run_id(
 
 def user_index_key(user_id: uuid.UUID | str) -> str:
     return f"analysis-keys:{user_id}"
+
+
+def purge_user_cache_sync(user_id: uuid.UUID) -> int:
+    """Synchronous twin of purge_user_cache, for the RQ worker.
+
+    The demo cleanup sweep and the retention job are plain processes with no
+    event loop, so they cannot await the async client. Same index, same keys,
+    same swallow-and-report-zero policy on an outage.
+    """
+    try:
+        from redis import Redis as SyncRedis
+
+        client = SyncRedis.from_url(settings.redis_url, decode_responses=True)
+        index = user_index_key(user_id)
+        keys = client.smembers(index)
+        removed = 0
+        if keys:
+            removed = client.delete(*keys)
+        client.delete(index)
+        return int(removed)
+    except Exception:  # noqa: BLE001 - a cache outage must not block a deletion
+        return 0
 
 
 async def purge_user_cache(user_id: uuid.UUID) -> int:

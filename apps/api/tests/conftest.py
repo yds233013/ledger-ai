@@ -20,10 +20,12 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from ledgerai.config import settings
 from ledgerai.db import get_db
+from ledgerai.deps import get_sync_sessionmaker
 from ledgerai.main import app
 from ledgerai.models import Account, Base, Category, Transaction, User
 from ledgerai.security.jwt import create_access_token
 from ledgerai.security.passwords import hash_password
+from ledgerai.security.ratelimit import get_limiter_redis, reset_limiter
 from ledgerai.services.ingest import load_category_definitions
 from ledgerai.services.normalize import (
     compute_dedupe_hash,
@@ -32,6 +34,25 @@ from ledgerai.services.normalize import (
 )
 
 TEST_DB = "ledgerai_test"
+
+
+@pytest.fixture(autouse=True)
+async def _clear_rate_limits():
+    """Each test starts with a fresh rate-limit budget.
+
+    Autouse and global: the limiter is process-wide state in Redis, so without
+    this one test's requests silently spend another's budget and whichever runs
+    later fails for a reason that has nothing to do with what it is testing.
+    """
+    reset_limiter(None)
+    try:
+        client = get_limiter_redis()
+        keys = [key async for key in client.scan_iter("ratelimit:*")]
+        if keys:
+            await client.delete(*keys)
+    except Exception:  # noqa: BLE001, S110 - a limiter outage is not a test's concern
+        reset_limiter(None)
+    yield
 
 
 def _url(database: str, *, is_async: bool) -> str:
@@ -56,6 +77,18 @@ def _test_database() -> Iterator[None]:
     with admin.connect() as connection:
         connection.execute(text(f'DROP DATABASE IF EXISTS "{TEST_DB}" WITH (FORCE)'))
     admin.dispose()
+
+
+@pytest.fixture
+def sync_factory(_test_database: None) -> Iterator[sessionmaker[Session]]:
+    """A session factory bound to the test database.
+
+    Demo provisioning takes a factory rather than a session, because it owns
+    its own transaction boundary — that is what makes it all-or-nothing.
+    """
+    engine = create_engine(_url(TEST_DB, is_async=False))
+    yield sessionmaker(engine, expire_on_commit=False)
+    engine.dispose()
 
 
 @pytest.fixture
@@ -248,12 +281,20 @@ async def client(demo_data: dict) -> AsyncIterator[AsyncClient]:
         async with factory() as session:
             yield session
 
+    # Demo provisioning runs sync services on a worker thread and needs its own
+    # session factory. Overridden alongside get_db so it reaches the test
+    # database rather than the developer's real one.
+    sync_engine = create_engine(_url(TEST_DB, is_async=False))
+    sync_factory = sessionmaker(sync_engine, expire_on_commit=False)
+
     app.dependency_overrides[get_db] = override_db
+    app.dependency_overrides[get_sync_sessionmaker] = lambda: sync_factory
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as http:
         yield http
     app.dependency_overrides.clear()
     await engine.dispose()
+    sync_engine.dispose()
 
 
 @pytest.fixture

@@ -10,6 +10,24 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { Category, CorrectionImpact, Facets, Page, Transaction } from '@/lib/types';
 
+/**
+ * The page reads its filter state from the URL, so navigation is mocked with a
+ * mutable search string that `replace` writes back into. That makes the URL an
+ * observable part of the test rather than an invisible side effect.
+ */
+const nav = vi.hoisted(() => ({
+  search: '',
+  replace: vi.fn((url: string) => {
+    nav.search = url.includes('?') ? url.slice(url.indexOf('?') + 1) : '';
+  }),
+}));
+
+vi.mock('next/navigation', () => ({
+  useRouter: () => ({ replace: nav.replace, push: vi.fn(), refresh: vi.fn() }),
+  usePathname: () => '/transactions',
+  useSearchParams: () => new URLSearchParams(nav.search),
+}));
+
 const dining: Category = {
   id: 'cat-dining', name: 'Dining & Restaurants', slug: 'dining', color: '#f59e0b', icon: 'fork',
 };
@@ -57,6 +75,7 @@ const facets: Facets = {
   ],
   merchants: ['Sweetgreen'],
   review_count: 0,
+  flagged_count: 0,
   total_count: 4,
 };
 
@@ -107,6 +126,8 @@ function sweetgreenCategories(): string[] {
 }
 
 beforeEach(() => {
+  nav.search = '';
+  nav.replace.mockClear();
   vi.clearAllMocks();
   mockApi.transactions.mockResolvedValue(listing());
   mockApi.facets.mockResolvedValue(facets);

@@ -8,6 +8,22 @@ import { AiBadge, Badge, Card, CardHeader, ErrorState, Skeleton } from '@/compon
 import { api } from '@/lib/api-client';
 import { queryKeys } from '@/lib/query-keys';
 
+/**
+ * When a demo account ends, in words rather than a raw timestamp.
+ *
+ * "in about 6 hours" is what someone actually needs to decide whether to keep
+ * exploring; the absolute time is kept alongside it for anyone who wants it.
+ */
+function formatExpiry(iso: string): string {
+  const remainingMs = new Date(iso).getTime() - Date.now();
+  if (remainingMs <= 0) return 'Expired — this account is scheduled for deletion';
+
+  const hours = Math.floor(remainingMs / 3_600_000);
+  const minutes = Math.floor((remainingMs % 3_600_000) / 60_000);
+  const relative = hours > 0 ? `in about ${hours}h ${minutes}m` : `in about ${minutes}m`;
+  return `${relative} (${new Date(iso).toLocaleString()})`;
+}
+
 export default function SettingsPage() {
   const { data, isLoading, isError, error, refetch } = useQuery({
     queryKey: queryKeys.profile,
@@ -48,6 +64,11 @@ export default function SettingsPage() {
             ['Email', data.email],
             ['Display name', data.display_name],
             ['Account type', data.is_demo ? 'Demo account — synthetic data only' : 'Standard'],
+            // Only an ephemeral per-visitor demo has a deadline. The permanent
+            // local development account is is_demo too and must not claim one.
+            ...(data.is_ephemeral_demo && data.demo_expires_at
+              ? ([['Expires', formatExpiry(data.demo_expires_at)]] as [string, string][])
+              : []),
             ['Transactions', data.transaction_count.toLocaleString()],
             ['Accounts', data.account_count.toLocaleString()],
             ['Uploads', data.upload_count.toLocaleString()],
@@ -58,6 +79,12 @@ export default function SettingsPage() {
             </div>
           ))}
         </dl>
+
+        {data.demo_notice ? (
+          <p className="border-t border-line px-5 py-3 text-xs leading-relaxed text-ink-muted">
+            {data.demo_notice}
+          </p>
+        ) : null}
       </Card>
 
       <Card>

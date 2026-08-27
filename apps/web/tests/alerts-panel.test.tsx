@@ -182,13 +182,15 @@ describe('AlertsPanel — honest truncation', () => {
     // The panel deliberately carries only the most serious alerts; implying it
     // has them all would hide the rest with no way to reach them.
     renderPanel([makeAlert({ id: 'a' }), makeAlert({ id: 'b' })], 30);
-    expect(screen.getByText('Showing 2 of 30 open alerts, most serious first.')).toBeInTheDocument();
+    expect(screen.getByText('Showing 2 of 30 alerts, most serious first.')).toBeInTheDocument();
   });
 
   it('links somewhere the rest can be reviewed', () => {
     renderPanel([makeAlert({ id: 'a' })], 30);
-    const link = screen.getByRole('link', { name: /Review flagged transactions/ });
-    expect(link).toHaveAttribute('href', '/transactions?review=needs_review');
+    const link = screen.getByRole('link', { name: /View all flagged transactions/ });
+    // NOT ?review=needs_review — that is the low-confidence categorization
+    // queue, which has no relationship to which transactions carry alerts.
+    expect(link).toHaveAttribute('href', '/transactions?flagged=1');
   });
 
   it('says nothing when it is showing everything', () => {

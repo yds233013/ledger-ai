@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from ipaddress import ip_address
 
 from fastapi import HTTPException, Request, status
 from redis.asyncio import Redis
@@ -90,27 +91,97 @@ EXPORT_LIMIT = RateLimit("export", times=5, seconds=3600)
 DESTRUCTIVE_LIMIT = RateLimit("destructive", times=5, seconds=3600)
 
 
+def _is_trusted_proxy(candidate: str) -> bool:
+    """Whether an address belongs to a configured reverse proxy."""
+    if not settings.proxy_trust_active:
+        return False
+    try:
+        parsed = ip_address(candidate)
+    except ValueError:
+        return False
+    return any(parsed in network for network in settings.trusted_proxy_networks)
+
+
+def resolve_client_ip(peer: str, forwarded_header: str) -> str:
+    """The caller's address, given the socket peer and X-Forwarded-For.
+
+    The header is a chain, appended to left-to-right, so the rightmost entries
+    are the ones added by infrastructure closest to us and the leftmost is
+    whatever the original client claimed. Walking from the right and stopping
+    at the first hop that is NOT a configured proxy yields the address of the
+    last party we can actually vouch for.
+
+    Taking the *leftmost* entry instead — the obvious reading, and the one the
+    previous implementation used — is the whole vulnerability: that value is
+    supplied by the caller, so rotating it hands out a fresh rate-limit bucket
+    per request.
+
+    Returns `peer` unchanged whenever the header cannot be believed: no trusted
+    proxy configured, the peer is not one of them, or every hop in the chain is
+    a proxy (leaving no client address to attribute the request to).
+    """
+    if not _is_trusted_proxy(peer):
+        return peer
+
+    for hop in reversed([part.strip() for part in forwarded_header.split(",")]):
+        if not hop or _is_trusted_proxy(hop):
+            continue
+        try:
+            # A hop that is not a valid address is not evidence of anything.
+            return str(ip_address(hop))
+        except ValueError:
+            return peer
+    return peer
+
+
 def client_identifier(request: Request) -> str:
     """Best-effort caller identity.
 
-    Behind a proxy the socket address is the proxy, so the first hop of
-    X-Forwarded-For is used when the deployment says it is trusted. Left
-    untrusted by default: an attacker can otherwise forge the header and
-    sidestep the limit entirely.
+    Behind a proxy the socket address is the proxy, so the forwarded chain is
+    consulted — but only when the socket peer is itself a configured proxy.
+    Untrusted by default: uvicorn is started WITHOUT --proxy-headers so
+    `request.client.host` is always the real TCP peer, and this function is the
+    single place that decides whether to look past it.
     """
-    if settings.trust_proxy_headers:
-        forwarded = request.headers.get("x-forwarded-for", "")
-        if forwarded:
-            return forwarded.split(",")[0].strip()
-    return request.client.host if request.client else "unknown"
+    peer = request.client.host if request.client else ""
+    if not peer:
+        return "unknown"
+    return resolve_client_ip(peer, request.headers.get("x-forwarded-for", ""))
+
+
+# INCR and EXPIRE as two round-trips is the classic broken limiter: anything
+# that interrupts the process between them (a client disconnect cancelling the
+# task, SIGTERM during a rolling deploy, a connection reset) leaves a counter
+# with no TTL. Nothing re-arms it afterwards, because the "first request"
+# branch never runs again, so the count climbs forever and that identifier is
+# locked out permanently — a Redis blip turned into a durable denial of service
+# against a legitimate user.
+#
+# One EVAL is genuinely atomic: Redis runs the whole script without
+# interleaving another command, so the counter and its expiry are created
+# together or not at all. The PTTL branch additionally repairs a key that
+# already lost its TTL, so a counter stranded by an older build heals on its
+# next use instead of needing an operator to DEL it.
+_INCR_WITH_TTL = """
+local current = redis.call('INCR', KEYS[1])
+if current == 1 then
+  redis.call('PEXPIRE', KEYS[1], ARGV[1])
+else
+  if redis.call('PTTL', KEYS[1]) < 0 then
+    redis.call('PEXPIRE', KEYS[1], ARGV[1])
+  end
+end
+return current
+"""
 
 
 async def check_rate_limit(key: str, limit: RateLimit) -> tuple[bool, int, bool]:
     """Consume one unit. Returns (allowed, remaining, store_available).
 
-    Fixed window: the counter is created with a TTL on first use and simply
-    incremented afterwards. Less precise than a sliding window at the boundary,
-    and entirely adequate for abuse control.
+    Fixed window: the counter is created with its TTL in a single atomic step
+    and incremented afterwards, the window ending when that TTL expires. Less
+    precise than a sliding window at the boundary, and entirely adequate for
+    abuse control.
 
     The third element is what lets the caller apply the right failure policy.
     This function does not decide it: it reports whether the count is real.
@@ -118,11 +189,12 @@ async def check_rate_limit(key: str, limit: RateLimit) -> tuple[bool, int, bool]
     redis_key = f"ratelimit:{limit.name}:{key}"
     try:
         client = get_limiter_redis()
-        current = await client.incr(redis_key)
-        if current == 1:
-            await client.expire(redis_key, limit.seconds)
-        remaining = max(0, limit.times - int(current))
-        return int(current) <= limit.times, remaining, True
+        # eval() ships the script each call rather than EVALSHA + NOSCRIPT
+        # recovery. The script is a few hundred bytes against a local Redis,
+        # and one code path is worth more here than the saved bandwidth.
+        current = int(await client.eval(_INCR_WITH_TTL, 1, redis_key, limit.seconds * 1000))
+        remaining = max(0, limit.times - current)
+        return current <= limit.times, remaining, True
     except Exception:  # noqa: BLE001 - the policy lives in enforce()
         # No exception text: it carries connection strings and host names.
         logger.warning("Rate limiter store unavailable for limit '%s'", limit.name)

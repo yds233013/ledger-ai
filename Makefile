@@ -11,7 +11,7 @@ PY := $(API)/.venv/bin
 .DEFAULT_GOAL := help
 .PHONY: help setup up down logs migrate revision seed reset dev dev-api dev-web dev-worker \
         test test-api test-web lint lint-api lint-web typecheck sample sweep lock clean \
-        prod-build prod-up prod-down prod-smoke
+        prod-build prod-build-worker prod-up prod-down prod-smoke demo-sweep
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -96,6 +96,9 @@ typecheck: lint-web ## Alias for the frontend typecheck
 prod-build: ## Build the three production images
 	docker compose -f docker-compose.prod.yml build
 
+prod-build-worker: ## Build ONLY the worker image, proving it needs no api tag
+	docker build --target worker -t ledgerai-worker:latest apps/api
+
 prod-up: ## Run the production stack locally (needs AUTH_SECRET + DEMO_USER_PASSWORD)
 	docker compose -f docker-compose.prod.yml up -d
 	@docker compose -f docker-compose.prod.yml ps
@@ -108,6 +111,9 @@ prod-smoke: ## Verify the production containers: non-root, healthy, migrations o
 
 sweep: ## Run the retention sweep (stuck jobs, failed-upload files, stale receipts)
 	$(PY)/python scripts/retention_sweep.py
+
+demo-sweep: ## Delete expired ephemeral demo accounts and everything they own
+	$(PY)/python scripts/demo_cleanup.py
 
 lock: ## Re-resolve and write apps/api/uv.lock
 	cd $(API) && uv lock

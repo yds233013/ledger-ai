@@ -1,8 +1,10 @@
 'use client';
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useCallback, useState } from 'react';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
+import { Suspense, useCallback, useMemo, useState } from 'react';
 
+import { ActiveFilterBanner } from '@/components/transactions/active-filter-banner';
 import { TransactionFilters } from '@/components/transactions/filters';
 import {
   type PendingCorrection,
@@ -12,14 +14,38 @@ import { Card, EmptyState, ErrorState, Skeleton } from '@/components/ui/primitiv
 import { api, type TransactionQuery } from '@/lib/api-client';
 import { affectedIds, applyOptimisticCorrection } from '@/lib/corrections';
 import { queryKeys } from '@/lib/query-keys';
+import {
+  DEFAULT_QUERY,
+  PAGE_SIZE,
+  paramsFromQuery,
+  queryFromParams,
+} from '@/lib/transaction-query';
 import type { Page, Transaction } from '@/lib/types';
 
-const PAGE_SIZE = 50;
-const DEFAULT_QUERY: TransactionQuery = { limit: PAGE_SIZE, offset: 0, sort: 'date', order: 'desc' };
-
-export default function TransactionsPage() {
+function TransactionsView() {
   const queryClient = useQueryClient();
-  const [query, setQuery] = useState<TransactionQuery>(DEFAULT_QUERY);
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+
+  // The URL owns the filter state. That is what lets the dashboard link
+  // straight to `?flagged=1`, and what makes the back button and a shared
+  // link behave the way anyone would expect them to.
+  const query = useMemo(
+    () => queryFromParams(new URLSearchParams(searchParams.toString())),
+    [searchParams],
+  );
+
+  const setQuery = useCallback(
+    (next: TransactionQuery) => {
+      const encoded = paramsFromQuery(next);
+      // replace, not push: adjusting a filter should not bury the page the
+      // user arrived from under a stack of near-identical history entries.
+      router.replace(encoded ? `${pathname}?${encoded}` : pathname, { scroll: false });
+    },
+    [pathname, router],
+  );
+
   const [savingId, setSavingId] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
@@ -105,9 +131,14 @@ export default function TransactionsPage() {
     },
   });
 
-  const handleChange = useCallback((patch: Partial<TransactionQuery>) => {
-    setQuery((current) => ({ ...current, ...patch, offset: 0 }));
-  }, []);
+  const handleChange = useCallback(
+    (patch: Partial<TransactionQuery>) => {
+      // Any filter change returns to the first page: staying on page 4 of a
+      // result set that no longer has four pages shows an empty table.
+      setQuery({ ...query, ...patch, offset: 0 });
+    },
+    [query, setQuery],
+  );
 
   const page = listQuery.data;
   const total = page?.total ?? 0;
@@ -128,6 +159,11 @@ export default function TransactionsPage() {
           </p>
         ) : null}
       </header>
+
+      <ActiveFilterBanner
+        query={query}
+        onClearFlagged={() => handleChange({ flagged: undefined })}
+      />
 
       <Card>
         {facetsQuery.data ? (
@@ -243,10 +279,7 @@ export default function TransactionsPage() {
                 type="button"
                 disabled={offset === 0}
                 onClick={() =>
-                  setQuery((current) => ({
-                    ...current,
-                    offset: Math.max(0, (current.offset ?? 0) - PAGE_SIZE),
-                  }))
+                  setQuery({ ...query, offset: Math.max(0, (query.offset ?? 0) - PAGE_SIZE) })
                 }
                 className="btn-secondary"
               >
@@ -255,12 +288,7 @@ export default function TransactionsPage() {
               <button
                 type="button"
                 disabled={!page.has_more}
-                onClick={() =>
-                  setQuery((current) => ({
-                    ...current,
-                    offset: (current.offset ?? 0) + PAGE_SIZE,
-                  }))
-                }
+                onClick={() => setQuery({ ...query, offset: (query.offset ?? 0) + PAGE_SIZE })}
                 className="btn-secondary"
               >
                 Next
@@ -270,5 +298,20 @@ export default function TransactionsPage() {
         ) : null}
       </Card>
     </div>
+  );
+}
+
+export default function TransactionsPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="space-y-4">
+          <Skeleton className="h-8 w-56" />
+          <Skeleton className="h-96" />
+        </div>
+      }
+    >
+      <TransactionsView />
+    </Suspense>
   );
 }

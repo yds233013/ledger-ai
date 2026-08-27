@@ -19,7 +19,12 @@ from ..deps import CurrentUser, DbSession
 from ..models import Account, Transaction, Upload
 from ..security.ratelimit import DESTRUCTIVE_LIMIT, EXPORT_LIMIT, enforce
 from ..services.analysis.cache import purge_user_cache
-from ..services.lifecycle import build_export, delete_user_data
+from ..services.demo import (
+    DEMO_DATA_NOTICE,
+    DEMO_LIFETIME_HOURS,
+    is_ephemeral_demo,
+)
+from ..services.lifecycle import TABLE_LABELS, build_export, delete_user_data
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
@@ -35,6 +40,11 @@ class ProfileOut(BaseModel):
     email: str
     display_name: str
     is_demo: bool
+    # True only for ephemeral per-visitor demo accounts, not for the permanent
+    # local development demo user.
+    is_ephemeral_demo: bool
+    demo_expires_at: datetime | None
+    demo_notice: str | None
     transaction_count: int
     account_count: int
     upload_count: int
@@ -61,10 +71,19 @@ async def profile(user: CurrentUser, session: DbSession) -> ProfileOut:
         )
     ).one()
 
+    ephemeral = is_ephemeral_demo(user)
     return ProfileOut(
         email=user.email,
         display_name=user.display_name,
         is_demo=user.is_demo,
+        is_ephemeral_demo=ephemeral,
+        demo_expires_at=user.demo_expires_at if ephemeral else None,
+        demo_notice=(
+            f"{DEMO_DATA_NOTICE} It expires {DEMO_LIFETIME_HOURS} hours after it was "
+            "created, and everything in it is deleted then."
+            if ephemeral
+            else None
+        ),
         transaction_count=counts[0],
         account_count=counts[1],
         upload_count=counts[2],
@@ -174,6 +193,12 @@ class DeletionResponse(BaseModel):
     account_removed: bool
     total_rows: int
     rows_by_table: dict[str, int]
+    # Readable names for the keys of rows_by_table, so the confirmation screen
+    # says "manual corrections" rather than "transaction_corrections".
+    table_labels: dict[str, str]
+    # What this operation deliberately keeps. Saying so is half of an honest
+    # preview: "everything else" is not something a user should have to infer.
+    retained: list[str]
     storage_objects_removed: int
     cache_keys_removed: int
     queued_jobs_cancelled: int
@@ -228,6 +253,10 @@ async def _run_deletion(
         session, user, delete_account=delete_account, dry_run=payload.dry_run
     )
     report = result.as_dict()
+    report["table_labels"] = {
+        table: TABLE_LABELS.get(table, table.replace("_", " "))
+        for table in report["rows_by_table"]
+    }
 
     if not payload.dry_run:
         # The cache is keyed by digest, so it is purged through the per-user
@@ -247,7 +276,7 @@ async def _run_deletion(
         message = (
             f"{report['total_rows']} record(s), {report['storage_objects_removed']} "
             "stored file(s) and every cached analysis have been permanently deleted. "
-            "Your account remains."
+            "Your sign-in and your accounts remain."
         )
 
     return DeletionResponse(**report, message=message)

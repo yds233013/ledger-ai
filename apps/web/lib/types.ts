@@ -64,7 +64,10 @@ export interface Facets {
   categories: Category[];
   accounts: Account[];
   merchants: string[];
+  /** Transactions the categorizer was unsure about. */
   review_count: number;
+  /** Transactions carrying an open alert. Unrelated to review_count. */
+  flagged_count: number;
   total_count: number;
 }
 
@@ -252,6 +255,8 @@ export interface Dashboard {
   net_cents: number;
   by_category: CategorySlice[];
   trend: TrendPoint[];
+  /** How many months the trend actually covers — not always 12. */
+  trend_months: number;
   recent: RecentTransaction[];
   needs_review_count: number;
   account_count: number;
@@ -396,6 +401,10 @@ export interface DeletionResult {
   account_removed: boolean;
   total_rows: number;
   rows_by_table: Record<string, number>;
+  /** Readable names for the keys of rows_by_table. */
+  table_labels: Record<string, string>;
+  /** What this operation deliberately keeps. */
+  retained: string[];
   storage_objects_removed: number;
   cache_keys_removed: number;
   queued_jobs_cancelled: number;
@@ -407,6 +416,10 @@ export interface Profile {
   email: string;
   display_name: string;
   is_demo: boolean;
+  /** True only for ephemeral per-visitor demo accounts. */
+  is_ephemeral_demo: boolean;
+  demo_expires_at: string | null;
+  demo_notice: string | null;
   transaction_count: number;
   account_count: number;
   upload_count: number;

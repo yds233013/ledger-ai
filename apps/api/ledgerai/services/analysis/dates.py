@@ -124,7 +124,17 @@ def resolve_date_phrase(question: str, today: date) -> DateRange:  # noqa: PLR09
         elif unit == "week":
             start = today - timedelta(weeks=count)
         elif unit == "month":
-            start = shift_month(today, -count)
+            # Whole calendar months, not "today minus N months".
+            #
+            # Counting back from the day produces a partial bucket at the far
+            # edge: asked on 27 August, "the last 6 months" would start on 27
+            # February and group two days of February as a month. Plotted, that
+            # is a point near zero at the start of the line and a narration
+            # calling February the lowest-spending month — arithmetically right,
+            # and a false impression. Aligning to the first of the month also
+            # matches how the dashboard trend already buckets, so the two
+            # surfaces cannot disagree about the same period.
+            start = shift_month(today.replace(day=1), -(count - 1))
         else:
             start = date(today.year - count, today.month, today.day)
         return DateRange(start=start, end=today, label=f"the last {count} {unit}s")

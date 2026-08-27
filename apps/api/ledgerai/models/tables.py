@@ -62,7 +62,29 @@ class User(Base, TimestampMixin):
     email: Mapped[str] = mapped_column(String(320), unique=True, nullable=False, index=True)
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     display_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    # True for any account holding synthetic demo data — including the seeded
+    # local development account, which is permanent.
     is_demo: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # Set ONLY on ephemeral per-visitor demo accounts, and the single marker the
+    # cleanup sweep selects on. The permanent development demo user has
+    # is_demo=True with this left NULL, so the sweep can never reach it, and a
+    # real account can never be reached because it has neither.
+    demo_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    # Idempotency key for demo provisioning. UNIQUE, so two concurrent requests
+    # carrying the same key cannot both create a user: the loser collides on
+    # this index and re-reads the winner's row instead of building a second
+    # dataset. NULL for every non-demo account (Postgres treats NULLs as
+    # distinct, so the constraint does not serialise ordinary sign-ups).
+    demo_request_key: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, unique=True
+    )
+    # GitHub's immutable numeric account id, when this account signs in with
+    # GitHub. UNIQUE, and the ONLY key an OAuth identity is resolved by — an
+    # email address is not proof of ownership even when the provider says it
+    # verified it, so it is never used to find an existing account.
+    github_id: Mapped[str | None] = mapped_column(String(64), nullable=True, unique=True)
     # Ledger AI does not convert between currencies. Aggregates are restricted
     # to this currency and anything else is disclosed, never silently summed.
     base_currency: Mapped[str] = mapped_column(String(3), default="USD", nullable=False)

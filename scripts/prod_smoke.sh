@@ -13,9 +13,17 @@ pass() { printf '  \033[32mPASS\033[0m  %s\n' "$1"; }
 fail() { printf '  \033[31mFAIL\033[0m  %s\n' "$1"; FAILURES=$((FAILURES + 1)); }
 FAILURES=0
 
-echo "== building images =="
-$COMPOSE build --quiet
-pass "all three images build"
+echo "== images build independently from a clean context =="
+# Built directly rather than through Compose so this proves each image is
+# self-contained: no `depends_on`, no service ordering, no pre-existing local
+# tag. The worker used to build only because the api service happened to be
+# built first.
+docker build --quiet --target api    -t ledgerai-api:latest    ./apps/api >/dev/null
+pass "api image builds on its own"
+docker build --quiet --target worker -t ledgerai-worker:latest ./apps/api >/dev/null
+pass "worker image builds on its own, with no api tag present"
+$COMPOSE build --quiet web
+pass "web image builds"
 
 echo ""
 echo "== image sizes =="
@@ -72,6 +80,16 @@ echo "== worker is processing =="
 if $COMPOSE logs worker 2>&1 | grep -q "Listening on"; then
   pass "worker attached to the queue"
 else fail "worker never reported listening"; fi
+
+echo ""
+echo "== liveness and readiness are distinct =="
+if curl -fsS "http://localhost:${API_PORT:-8000}/health/ready" | grep -q '"status":"ready"'; then
+  pass "api reports ready"
+else fail "api /health/ready did not report ready"; fi
+
+if curl -fsS "http://localhost:${API_PORT:-8000}/health" | grep -q '"probe":"liveness"'; then
+  pass "liveness and readiness are separate probes"
+else fail "liveness probe did not identify itself"; fi
 
 echo ""
 echo "== graceful shutdown =="

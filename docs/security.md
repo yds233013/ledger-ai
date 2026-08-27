@@ -36,6 +36,74 @@ HS256 with a shared secret is appropriate here because both services are ours
 and co-deployed. Exposing the API to third-party clients would mean moving to
 RS256/JWKS so the verifier no longer holds the signing key.
 
+### Three ways in
+
+| Provider | Credential | Available |
+|---|---|---|
+| Credentials | email + password, verified by the API | always |
+| Demo | none — the server provisions an account | always |
+| GitHub OAuth | GitHub account | only when `AUTH_GITHUB_ID`/`AUTH_GITHUB_SECRET` are set |
+
+All three end at the same contract: an Auth.js session whose `user.id` is a
+Ledger AI user id, from which `/api/auth/token` mints the bearer token.
+
+### Demo accounts
+
+"Try the demo" provisions a **real user row** — which is the whole security
+argument. Every `user_id` predicate that already protects a real account
+protects a demo visitor too, because there is no second, weaker path.
+
+* The account is created server-side. The browser never receives an address or
+  password for it, so a demo account cannot be re-entered, shared or guessed
+  at later. Its password hash is random bytes no one holds the pre-image of.
+* The address is `demo-<random>@demo.ledgerai.invalid` — a domain that cannot
+  receive mail and cannot collide with a real sign-up.
+* The documented development password is never reused for one, asserted by
+  test.
+* Provisioning takes an idempotency key, `UNIQUE` on `users`. A retried request
+  returns the account the first attempt created; two concurrent requests with
+  the same key collide on the index and one re-reads the winner.
+* The user, accounts and every transaction are written in **one** transaction.
+  A failure half-way leaves no user at all, rather than an empty shell someone
+  then signs into.
+
+### Demo expiry cannot be renewed
+
+`demo_expires_at` lives on the **row**, and `get_current_user` checks it on
+every single request.
+
+Putting expiry in the token would not hold: the browser mints a fresh
+short-lived token whenever the old one nears expiry, so a visitor who simply
+kept the tab open would renew their way past the deadline forever. A column
+cannot be renewed by refreshing. The token issued at provisioning is
+additionally capped so it never outlives the account.
+
+`demo_expires_at IS NOT NULL` is the single marker of an ephemeral account and
+the only thing the cleanup sweep selects on. The permanent development demo
+user is `is_demo` with that column NULL; a real account has neither. Neither
+can be reached by the sweep, and `delete_demo_user` raises rather than proceed
+if handed anything else.
+
+### OAuth account linking
+
+A GitHub identity resolves to a Ledger AI account by GitHub's **immutable
+account id** and by nothing else.
+
+An existing account is never adopted because its email matches the address
+GitHub reported — **not even when GitHub says it verified that address**.
+"Verified by the provider" means the provider believes the person controls that
+mailbox; it says nothing about who owns the Ledger AI account already using it.
+Merging on it would mean anyone able to set their GitHub address to a known
+user's address inherits that user's financial data. A GitHub identity that has
+not been seen before therefore always gets its own new account.
+
+The reported address is stored only when GitHub verified it *and* no other
+account holds it; otherwise a non-routable placeholder is used, so an
+unverified or contested address never becomes an account identifier.
+
+Authentication failures log a status code and nothing else. No token, callback
+parameter, or provider payload reaches a log line or a response.
+
 ## Secrets
 
 `.env` and `.env.local` are gitignored. Only `.env.example` files with
@@ -91,8 +159,51 @@ unavailable`, and whether the policy currently in force is `failing_closed` or
 `failing_open`. It still returns **200**: an orchestrator that killed every
 replica over a dependency outage would turn a degraded limiter into a total one.
 
-`X-Forwarded-For` is trusted only when `TRUST_PROXY_HEADERS` is set, because a
-caller can otherwise forge it and sidestep the limit entirely.
+`GET /health/ready` answers the different question of whether the instance
+should still receive traffic, and returns **503** when a production instance
+cannot enforce a limit it fails closed on. See `docs/deployment.md`.
+
+### The counter and its expiry are set atomically
+
+`INCR` followed by a separate `EXPIRE` is the classic broken limiter. Anything
+that interrupts the process between the two — a client disconnect cancelling
+the task, `SIGTERM` during a rolling deploy, a connection reset — leaves a
+counter with **no TTL**. Nothing re-arms it, because the "first request" branch
+never runs again, so the count climbs forever and whoever that key identifies
+is locked out permanently. A brief Redis blip becomes a durable denial of
+service against a legitimate user.
+
+Both operations therefore run in a single Lua `EVAL`, which Redis executes
+without interleaving another command. The script also repairs a key that has
+already lost its TTL (`PTTL < 0`), so a counter stranded by an older build
+heals on its next use instead of needing an operator to `DEL` it.
+
+### Trusting a proxy, narrowly
+
+Rate limits identify callers by IP, so behind a proxy the socket peer is the
+proxy. Consulting `X-Forwarded-For` requires **both** of:
+
+```
+TRUST_PROXY_HEADERS=true
+TRUSTED_PROXY_IPS=10.0.0.0/8
+```
+
+The flag alone does nothing. "Trust the header whenever it is present" is
+precisely the bypass: an attacker rotates it and receives a fresh budget per
+request. If the flag is on and the allow-list is empty or unparseable, no
+forwarded address is believed — a misconfiguration under-trusts rather than
+opening the header to everyone.
+
+The chain is walked **right to left**, stopping at the first hop that is not a
+configured proxy — the last address we can actually vouch for. Taking the
+leftmost entry, the obvious reading, is the vulnerability: that value is
+whatever the caller sent.
+
+The API runs uvicorn **without** `--proxy-headers` and without
+`--forwarded-allow-ips`. Those flags rewrite `request.client.host` from the
+header before the application sees the request, and with `"*"` they do it for
+any TCP peer — defeating the allow-list one layer below it. Resolution happens
+in the application instead, where it is enforced and unit-tested.
 
 ## Data lifecycle
 

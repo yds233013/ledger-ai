@@ -326,3 +326,56 @@ class TestGenericWordsAreNotCategories:
     def test_an_explicit_category_name_still_matches(self, vocab: UserVocabulary) -> None:
         plan, _ = RulePlanner().plan("How much did I pay in bank fees this year?", vocab, TODAY)
         assert plan.filters.category_slugs == ["fees"]
+
+
+class TestRelativeMonthWindowsAreWholeMonths:
+    """"The last N months" must not end in a two-day bucket.
+
+    Counting back from the day produces a partial month at the far edge of the
+    window. Grouped by month and plotted, that partial bucket becomes a point
+    near zero at the start of the line, and the narration calls it the
+    lowest-spending month — arithmetically correct and a false impression.
+    """
+
+    def test_a_six_month_window_starts_on_the_first(self) -> None:
+        from datetime import date as _date
+
+        from ledgerai.services.analysis.dates import resolve_date_phrase
+
+        window = resolve_date_phrase(
+            "show me my spending trend over the last 6 months", _date(2026, 8, 27)
+        )
+        assert window.start == _date(2026, 3, 1)
+        assert window.end == _date(2026, 8, 27)
+
+    def test_it_covers_exactly_n_calendar_months(self) -> None:
+        from datetime import date as _date
+
+        from ledgerai.services.analysis.dates import resolve_date_phrase
+
+        for count in (2, 3, 6, 12):
+            window = resolve_date_phrase(
+                f"spending over the last {count} months", _date(2026, 8, 27)
+            )
+            months = (window.end.year - window.start.year) * 12 + (
+                window.end.month - window.start.month
+            ) + 1
+            assert months == count, f"{count} months resolved to {months} buckets"
+
+    def test_it_works_across_a_year_boundary(self) -> None:
+        from datetime import date as _date
+
+        from ledgerai.services.analysis.dates import resolve_date_phrase
+
+        window = resolve_date_phrase("the last 3 months", _date(2026, 2, 9))
+        assert window.start == _date(2025, 12, 1)
+
+    def test_day_and_week_windows_are_unchanged(self) -> None:
+        """Only the month unit aligns — "the last 7 days" still means 7 days."""
+        from datetime import date as _date
+
+        from ledgerai.services.analysis.dates import resolve_date_phrase
+
+        days = resolve_date_phrase("the last 7 days", _date(2026, 8, 27))
+        assert days.start == _date(2026, 8, 21)
+        assert days.end == _date(2026, 8, 27)

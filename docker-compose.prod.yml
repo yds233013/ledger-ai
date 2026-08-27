@@ -26,6 +26,11 @@ x-api-env: &api-env
   OPENAI_API_KEY: ${OPENAI_API_KEY:-}
   LOG_LEVEL: ${LOG_LEVEL:-INFO}
   ENABLE_ACCESS_LOG: "false"
+  # The API is published directly on a host port in this stack, with no proxy
+  # in front, so the socket peer IS the caller. Trusting X-Forwarded-For here
+  # would let anyone rotate their rate-limit identity with a header.
+  TRUST_PROXY_HEADERS: ${TRUST_PROXY_HEADERS:-false}
+  TRUSTED_PROXY_IPS: ${TRUSTED_PROXY_IPS:-}
 
 services:
   postgres:
@@ -67,6 +72,7 @@ services:
     build:
       context: ./apps/api
       dockerfile: Dockerfile
+      target: api
     environment: *api-env
     command: ["alembic", "upgrade", "head"]
     depends_on:
@@ -79,6 +85,7 @@ services:
     build:
       context: ./apps/api
       dockerfile: Dockerfile
+      target: api
     environment: *api-env
     ports:
       - "${API_PORT:-8000}:8000"
@@ -97,7 +104,11 @@ services:
     image: ledgerai-worker:latest
     build:
       context: ./apps/api
-      dockerfile: Dockerfile.worker
+      dockerfile: Dockerfile
+      # A named stage of the API Dockerfile, so this builds from a clean clone
+      # with no dependency on an api image already existing locally and no
+      # reliance on the order Compose happens to iterate services in.
+      target: worker
     environment: *api-env
     volumes:
       # The same disk the API writes receipts to.
@@ -125,9 +136,15 @@ services:
       AUTH_TRUST_HOST: "true"
       NEXTAUTH_URL: ${NEXTAUTH_URL:-http://localhost:3000}
       NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+      # Optional. Unset means the sign-in page offers the demo and credentials
+      # only; nothing else changes.
+      AUTH_GITHUB_ID: ${AUTH_GITHUB_ID:-}
+      AUTH_GITHUB_SECRET: ${AUTH_GITHUB_SECRET:-}
     ports:
       - "${WEB_PORT:-3000}:3000"
     depends_on:
+      # The API image's health check probes /health/ready, so the web service
+      # starts only once the API can actually serve requests.
       api:
         condition: service_healthy
     restart: unless-stopped

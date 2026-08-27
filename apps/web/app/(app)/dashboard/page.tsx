@@ -136,7 +136,17 @@ export default function DashboardPage() {
         </Card>
 
         <Card>
-          <CardHeader title="Spending trend" subtitle="Last 12 months" />
+          <CardHeader
+            title="Spending trend"
+            subtitle={
+              // Say what is actually plotted. A young account has fewer than
+              // twelve months of history, and claiming twelve while drawing a
+              // flat line along the axis reads as "spent nothing", not "no data".
+              data.trend_months >= 12
+                ? 'Last 12 months'
+                : `Last ${data.trend_months} month${data.trend_months === 1 ? '' : 's'}`
+            }
+          />
           <div className="p-4">
             <TrendLineChart data={trendData} />
           </div>

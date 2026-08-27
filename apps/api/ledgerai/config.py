@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from ipaddress import IPv4Network, IPv6Network, ip_network
 from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -79,8 +80,14 @@ class Settings(BaseSettings):
     # turns off request access logging.
     environment: str = "development"
     # Only trust X-Forwarded-For when a known proxy sits in front; otherwise a
-    # caller can forge it and sidestep rate limits.
+    # caller can forge it and sidestep rate limits. BOTH of these must be set
+    # for a forwarded address to be believed: the flag on its own does nothing,
+    # because "trust the header whenever it is present" IS the bypass.
     trust_proxy_headers: bool = False
+    # Comma-separated IPs or CIDRs of the reverse proxies allowed to set
+    # X-Forwarded-For. Kept a plain str for the same reason as cors_origins:
+    # pydantic-settings JSON-decodes list-typed fields before validators run.
+    trusted_proxy_ips: str = ""
     # Request access logs record full query strings, which for this API include
     # merchant search terms. Off by default in production.
     enable_access_log: bool = True
@@ -89,6 +96,36 @@ class Settings(BaseSettings):
     @property
     def cors_origin_list(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
+
+    @property
+    def trusted_proxy_networks(self) -> tuple[IPv4Network | IPv6Network, ...]:
+        """Parsed TRUSTED_PROXY_IPS. Unparseable entries are dropped, not guessed.
+
+        A bare address becomes a /32 (or /128), so "10.0.0.5" and
+        "10.0.0.0/8" are both expressible without a second setting.
+        """
+        networks: list[IPv4Network | IPv6Network] = []
+        for entry in self.trusted_proxy_ips.split(","):
+            candidate = entry.strip()
+            if not candidate:
+                continue
+            try:
+                networks.append(ip_network(candidate, strict=False))
+            except ValueError:
+                # Logged by security.ratelimit on first use; config must not
+                # import logging machinery just to complain here.
+                continue
+        return tuple(networks)
+
+    @property
+    def proxy_trust_active(self) -> bool:
+        """Whether a forwarded client address may be believed at all.
+
+        Fail safe: the flag without a usable allow-list means no proxy is
+        trusted, so a misconfiguration under-trusts rather than opening the
+        header to everyone.
+        """
+        return self.trust_proxy_headers and bool(self.trusted_proxy_networks)
 
     @property
     def sync_database_url(self) -> str:

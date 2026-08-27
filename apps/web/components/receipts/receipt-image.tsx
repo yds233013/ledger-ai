@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 
 import { Spinner } from '@/components/ui/primitives';
-import { API_URL, fetchAuthorizedObjectUrl } from '@/lib/api-client';
+import { fetchAuthorizedObjectUrl } from '@/lib/api-client';
 import { cn } from '@/lib/cn';
 
 /**
@@ -124,9 +124,13 @@ export function ReceiptImage({
         )}
       </div>
 
+      {/*
+        The point of this line is the guarantee, not the hostname. Printing the
+        API host put deployment detail into the interface — and into every
+        screenshot — while telling the user nothing they needed.
+      */}
       <p className="text-xs text-ink-faint">
-        Served from {new URL(API_URL).host} with your session only — this file has no
-        public link.
+        Loaded with your session only — this file has no public link.
       </p>
     </div>
   );

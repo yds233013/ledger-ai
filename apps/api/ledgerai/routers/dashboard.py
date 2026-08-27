@@ -92,6 +92,9 @@ class DashboardOut(BaseModel):
     net_cents: int
     by_category: list[CategorySlice]
     trend: list[TrendPoint]
+    # How many months the trend actually covers, so the UI can label it
+    # honestly instead of always claiming twelve.
+    trend_months: int
     recent: list[RecentTransaction]
     needs_review_count: int
     account_count: int
@@ -322,6 +325,19 @@ async def get_dashboard(user: CurrentUser, session: DbSession) -> DashboardOut:
     months = _month_labels(trend_start, current_start)
     trend_by_month = {row.month: int(row.value or 0) for row in trend_rows}
 
+    # Drop leading months with no data at all.
+    #
+    # A brand-new account, and every ephemeral demo account, holds less than a
+    # full year of history. Plotting the months before the first transaction as
+    # $0 does not say "no data" — it draws a flat line along the axis, which
+    # reads as "you spent nothing for four months". Trailing gaps are kept: a
+    # month between two months of activity genuinely is a zero.
+    first_with_data = next(
+        (index for index, month in enumerate(months) if trend_by_month.get(month)),
+        None,
+    )
+    months = months[first_with_data:] if first_with_data is not None else months[-1:]
+
     return DashboardOut(
         period_label=current_start.strftime("%B %Y"),
         total_spend=round(total_cents / 100, 2),
@@ -355,6 +371,7 @@ async def get_dashboard(user: CurrentUser, session: DbSession) -> DashboardOut:
             )
             for month in months
         ],
+        trend_months=len(months),
         recent=[
             RecentTransaction(
                 id=str(row.id),

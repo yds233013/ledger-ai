@@ -62,6 +62,45 @@ UNCONFIRMED_RECEIPT_DAYS = 30
 # gigabyte in memory.
 EXPORT_ROW_CAP = 100_000
 
+# The data-only deletion set: exactly the tables "Delete my data" empties.
+#
+# Declared once because the preview and the delete step MUST agree. When they
+# were two hand-maintained lists they drifted in both directions — the preview
+# counted `accounts` (which data-only deletion deliberately keeps) and omitted
+# `categories` (which it removes), so the confirmation screen for an
+# irreversible operation described neither what would go nor what would stay.
+#
+# Order matters: children before parents, so a delete never trips a foreign key
+# on a database where a cascade is not configured.
+DATA_ONLY_MODELS: tuple[UserOwnedModel, ...] = (
+    Alert,
+    AnalysisRun,
+    TransactionCorrection,
+    Receipt,
+    Transaction,
+    ProcessingJob,
+    Upload,
+    # User-created categories only; system ones have user_id IS NULL and stay.
+    Category,
+)
+
+# What survives "Delete my data", stated for the UI rather than left implicit.
+DATA_ONLY_RETAINED = ("your sign-in identity", "your accounts", "built-in categories")
+
+# Human labels for the table names in a deletion report. The UI should not have
+# to un-pluralise ORM table names to write a sentence.
+TABLE_LABELS: dict[str, str] = {
+    "alerts": "alerts",
+    "analysis_runs": "saved Ask Ledger analyses",
+    "transaction_corrections": "manual corrections",
+    "receipts": "receipts",
+    "transactions": "transactions",
+    "processing_jobs": "processing jobs",
+    "uploads": "uploaded files",
+    "categories": "categories you created",
+    "accounts": "accounts",
+}
+
 EXPORT_README = """Ledger AI — data export
 =======================
 
@@ -87,6 +126,23 @@ Negative amounts are outflows (spending); positive amounts are inflows.
 """
 
 
+# The closed set of tables that carry a user_id. Spelled out as a union rather
+# than `type` so mypy still checks `model.user_id` and `model.__tablename__` at
+# every call site — a bare `type` erases exactly the attributes this module
+# relies on.
+type UserOwnedModel = (
+    type[Transaction]
+    | type[TransactionCorrection]
+    | type[Receipt]
+    | type[Alert]
+    | type[AnalysisRun]
+    | type[Upload]
+    | type[ProcessingJob]
+    | type[Category]
+    | type[Account]
+)
+
+
 @dataclass(slots=True)
 class DeletionReport:
     """What a deletion did — or, in dry-run mode, what it would do."""
@@ -95,6 +151,9 @@ class DeletionReport:
     dry_run: bool = False
     account_removed: bool = False
     rows_by_table: dict[str, int] = field(default_factory=dict)
+    # What this operation deliberately leaves behind, so the confirmation can
+    # say it rather than letting the user infer it from an absence.
+    retained: list[str] = field(default_factory=list)
     storage_objects_removed: int = 0
     cache_keys_removed: int = 0
     queued_jobs_cancelled: int = 0
@@ -315,18 +374,16 @@ async def cancel_queued_jobs(
     return cancelled
 
 
-async def _count_user_rows(session: AsyncSession, user_id: uuid.UUID) -> dict[str, int]:
+async def _count_user_rows(
+    session: AsyncSession, user_id: uuid.UUID, models: tuple[UserOwnedModel, ...]
+) -> dict[str, int]:
+    """Count the rows `models` holds for one user.
+
+    Callers pass the same tuple the delete step iterates, so the preview cannot
+    describe a different operation from the one that runs.
+    """
     counts: dict[str, int] = {}
-    for model in (
-        Transaction,
-        TransactionCorrection,
-        Receipt,
-        Alert,
-        AnalysisRun,
-        Upload,
-        ProcessingJob,
-        Account,
-    ):
+    for model in models:
         counts[model.__tablename__] = int(
             (await session.execute(
                 select(func.count()).select_from(model).where(model.user_id == user_id)
@@ -348,7 +405,14 @@ async def delete_user_data(
     field is filled in there.
     """
     report = DeletionReport(user_id=str(user.id), dry_run=dry_run)
-    report.rows_by_table = await _count_user_rows(session, user.id)
+    # Deleting the account cascades from users.id, so it reaches `accounts` too;
+    # the data-only path deliberately does not. Counting the exact set that will
+    # be deleted is what keeps the preview honest.
+    models: tuple[UserOwnedModel, ...] = (
+        (*DATA_ONLY_MODELS, Account) if delete_account else DATA_ONLY_MODELS
+    )
+    report.rows_by_table = await _count_user_rows(session, user.id, models)
+    report.retained = [] if delete_account else list(DATA_ONLY_RETAINED)
     report.queued_jobs_cancelled = await cancel_queued_jobs(session, user.id, dry_run=dry_run)
 
     if dry_run:
@@ -370,19 +434,10 @@ async def delete_user_data(
         await session.execute(delete(User).where(User.id == user.id))
         report.account_removed = True
     else:
-        # Keep the user and their accounts; remove the data they hold.
-        for model in (
-            Alert,
-            AnalysisRun,
-            TransactionCorrection,
-            Receipt,
-            Transaction,
-            ProcessingJob,
-            Upload,
-        ):
+        # Keep the user and their accounts; remove the data they hold. Same
+        # tuple the preview counted, so the two can never disagree.
+        for model in DATA_ONLY_MODELS:
             await session.execute(delete(model).where(model.user_id == user.id))
-        # User-created categories go too; system ones (user_id IS NULL) stay.
-        await session.execute(delete(Category).where(Category.user_id == user.id))
 
     await session.flush()
     logger.info(

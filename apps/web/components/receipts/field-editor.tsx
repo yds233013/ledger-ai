@@ -39,6 +39,7 @@ function MoneyField({
   confidence,
   onChange,
   required = false,
+  locked = false,
 }: {
   id: string;
   label: string;
@@ -46,6 +47,7 @@ function MoneyField({
   confidence: number | undefined;
   onChange: (value: string) => void;
   required?: boolean;
+  locked?: boolean;
 }) {
   return (
     <div>
@@ -62,7 +64,8 @@ function MoneyField({
         value={value}
         onChange={(event) => onChange(event.target.value)}
         placeholder="0.00"
-        className="input text-right tabular-nums"
+        disabled={locked}
+        className="input text-right tabular-nums disabled:cursor-not-allowed disabled:opacity-60"
       />
     </div>
   );
@@ -82,6 +85,11 @@ export function ReceiptFieldEditor({
   categories: Category[];
 }) {
   const confidence = receipt.field_confidence;
+  // A confirmed receipt is immutable — the API refuses edits to it. Leaving the
+  // inputs live would let someone retype every field and only discover on save
+  // that nothing could be written, so they are disabled and the summary below
+  // switches from "confirming will…" to what actually happened.
+  const locked = receipt.status === 'confirmed';
 
   return (
     <div className="space-y-4">
@@ -96,7 +104,8 @@ export function ReceiptFieldEditor({
           id="receipt-merchant"
           value={draft.merchant}
           onChange={(event) => onChange({ merchant: event.target.value })}
-          className="input"
+          disabled={locked}
+          className="input disabled:cursor-not-allowed disabled:opacity-60"
         />
       </div>
 
@@ -113,7 +122,8 @@ export function ReceiptFieldEditor({
             type="date"
             value={draft.posted_date}
             onChange={(event) => onChange({ posted_date: event.target.value })}
-            className="input"
+            disabled={locked}
+            className="input disabled:cursor-not-allowed disabled:opacity-60"
           />
         </div>
         <div>
@@ -128,33 +138,35 @@ export function ReceiptFieldEditor({
             maxLength={3}
             value={draft.currency}
             onChange={(event) => onChange({ currency: event.target.value.toUpperCase() })}
-            className="input uppercase"
+            disabled={locked}
+            className="input uppercase disabled:cursor-not-allowed disabled:opacity-60"
           />
         </div>
       </div>
 
       <div className="grid grid-cols-2 gap-3">
         <MoneyField
-          id="receipt-subtotal" label="Subtotal" value={draft.subtotal}
+          id="receipt-subtotal" label="Subtotal" value={draft.subtotal} locked={locked}
           confidence={confidence.subtotal} onChange={(v) => onChange({ subtotal: v })}
         />
         <MoneyField
-          id="receipt-tax" label="Tax" value={draft.tax}
+          id="receipt-tax" label="Tax" value={draft.tax} locked={locked}
           confidence={confidence.tax} onChange={(v) => onChange({ tax: v })}
         />
         <MoneyField
-          id="receipt-tip" label="Tip" value={draft.tip}
+          id="receipt-tip" label="Tip" value={draft.tip} locked={locked}
           confidence={confidence.tip} onChange={(v) => onChange({ tip: v })}
         />
         <MoneyField
-          id="receipt-total" label="Total" value={draft.total} required
+          id="receipt-total" label="Total" value={draft.total} required locked={locked}
           confidence={confidence.total} onChange={(v) => onChange({ total: v })}
         />
       </div>
 
       <div className="rounded-lg border border-line bg-surface-sunken p-3">
         <p className="text-xs leading-relaxed text-ink-muted">
-          This receipt records money spent, so confirming it creates an outflow of{' '}
+          {locked ? 'This receipt was recorded as an outflow of ' : null}
+          {locked ? null : 'This receipt records money spent, so confirming it creates an outflow of '}
           <span className="font-medium text-ink">
             {draft.total || '0.00'} {draft.currency}
           </span>
@@ -171,7 +183,8 @@ export function ReceiptFieldEditor({
             id="receipt-account"
             value={draft.accountId}
             onChange={(event) => onChange({ accountId: event.target.value })}
-            className="input"
+            disabled={locked}
+            className="input disabled:cursor-not-allowed disabled:opacity-60"
           >
             <option value="">{receipt.default_account_name} (default)</option>
             {accounts
@@ -197,7 +210,8 @@ export function ReceiptFieldEditor({
             id="receipt-category"
             value={draft.categoryId}
             onChange={(event) => onChange({ categoryId: event.target.value })}
-            className="input"
+            disabled={locked}
+            className="input disabled:cursor-not-allowed disabled:opacity-60"
           >
             <option value="">Uncategorized</option>
             {categories.map((category) => (

@@ -64,6 +64,12 @@ ignore = ["S101", "B008"]  # assert in tests; FastAPI Depends() in defaults
 # The seed and sample generators use a seeded PRNG on purpose: the demo data
 # must be byte-identical on every machine. It is not cryptographic material.
 "../../scripts/*" = ["S311"]
+# Same reason. These fabricate transaction amounts and dates for synthetic
+# datasets — nothing here is a secret, and where unpredictability actually
+# matters (the demo seed, the account address, the password hash) the values
+# come from `secrets`, not from `random`.
+"ledgerai/services/demo_data.py" = ["S311"]
+"ledgerai/services/demo.py" = ["S311"]
 
 [tool.mypy]
 python_version = "3.12"

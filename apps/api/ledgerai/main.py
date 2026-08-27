@@ -6,12 +6,14 @@ import logging
 import uuid
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request, status
+from fastapi import FastAPI, Request, Response, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from sqlalchemy import text
 
 from .config import settings
+from .db import async_engine
 from .routers import alerts, analysis, auth, dashboard, receipts, transactions, uploads
 from .routers import settings as settings_router
 from .security.logging import install_redaction
@@ -52,6 +54,12 @@ def _check_production_config() -> tuple[list[str], list[str]]:
     if settings.demo_user_password == "demo1234":  # noqa: S105
         fatal.append("DEMO_USER_PASSWORD is still the development default.")
 
+    if settings.trust_proxy_headers and not settings.trusted_proxy_networks:
+        advisory.append(
+            "TRUST_PROXY_HEADERS is on but TRUSTED_PROXY_IPS is empty or unparseable, "
+            "so no forwarded address is believed and rate limits are keyed by the "
+            "socket peer. Set TRUSTED_PROXY_IPS to the reverse proxy's address/CIDR."
+        )
     if any("localhost" in origin for origin in settings.cors_origin_list):
         advisory.append(
             "CORS_ORIGINS points at localhost — expected only when verifying the "
@@ -144,15 +152,32 @@ async def validation_handler(request: Request, exc: RequestValidationError) -> J
     )
 
 
+async def _probe_database() -> bool:
+    """Whether the database answers right now.
+
+    A trivial round-trip, not a query against a table: this must report on the
+    connection, not on whether any particular migration has run.
+    """
+    try:
+        async with async_engine.connect() as connection:
+            await connection.execute(text("SELECT 1"))
+        return True
+    except Exception:  # noqa: BLE001 - an unreachable database is the answer
+        # No exception text: it carries the connection string.
+        logger.warning("Readiness probe: the database did not answer")
+        return False
+
+
 @app.get("/health", tags=["meta"])
 async def health() -> dict[str, object]:
-    """Liveness plus the state of the dependency that can silently degrade.
+    """LIVENESS — is this process alive and worth keeping?
 
-    Returns 200 even when the rate-limit store is down. The container is alive
-    and most of the API still works, and returning unhealthy would have the
-    orchestrator kill every replica over an outage none of them caused —
-    turning a degraded limiter into a total one. The degradation is reported
-    instead, which is what monitoring needs to see.
+    Deliberately returns 200 even when a dependency is down, and says so in the
+    body. An orchestrator restarts a container that fails its liveness probe,
+    and restarting every replica because a shared Redis blipped converts a
+    degraded limiter into a total outage while fixing nothing. Whether traffic
+    should still be routed here is a different question, answered by
+    /health/ready below.
     """
     limiter_ok = await probe_limiter_store()
     return {
@@ -168,6 +193,54 @@ async def health() -> dict[str, object]:
         "rate_limiting": "enforced"
         if limiter_ok
         else ("failing_closed" if settings.is_production else "failing_open"),
+        "probe": "liveness",
+    }
+
+
+@app.get("/health/ready", tags=["meta"])
+async def readiness(response: Response) -> dict[str, object]:
+    """READINESS — should this instance receive traffic right now?
+
+    503 when it should not, so a load balancer drains it instead of serving
+    errors, and a rolling deploy waits rather than cutting over to an instance
+    that cannot work. Two things make an instance unready:
+
+      * **The database is unreachable.** Every user-scoped route needs it, so
+        there is nothing useful left to serve.
+      * **The rate-limit store is unreachable IN PRODUCTION.** Public endpoints
+        fail closed there by design (see security/ratelimit.py), so login,
+        upload and analysis would all be refused — an instance that rejects
+        every anonymous caller should not be in rotation. In development the
+        same outage fails open and the instance is still perfectly usable, so
+        it stays ready.
+
+    The body names which dependency is unhappy but not what or where it is:
+    "database" is a role, not a hostname.
+    """
+    database_ok = await _probe_database()
+    limiter_ok = await probe_limiter_store()
+    # Only the public/production combination is disqualifying.
+    limiter_blocks_traffic = not limiter_ok and settings.is_production
+
+    ready = database_ok and not limiter_blocks_traffic
+    if not ready:
+        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+
+    reasons: list[str] = []
+    if not database_ok:
+        reasons.append("database_unavailable")
+    if limiter_blocks_traffic:
+        reasons.append("rate_limit_store_unavailable")
+
+    return {
+        "status": "ready" if ready else "not_ready",
+        "service": "ledgerai-api",
+        "probe": "readiness",
+        "dependencies": {
+            "database": "ok" if database_ok else "unavailable",
+            "rate_limit_store": "ok" if limiter_ok else "unavailable",
+        },
+        "reasons": reasons,
     }
 
 

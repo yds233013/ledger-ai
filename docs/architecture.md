@@ -1,5 +1,41 @@
 # Architecture
 
+## System architecture
+
+```mermaid
+flowchart LR
+    B["Browser"]
+
+    subgraph app["Ledger AI"]
+        W["web · Next.js<br/>Auth.js session<br/>mints 15-min HS256"]
+        A["api · FastAPI<br/>every route user-scoped"]
+        K["worker · RQ<br/>CSV · OCR · alerts"]
+    end
+
+    subgraph data["State"]
+        P[("Postgres<br/>every durable record")]
+        R[("Redis<br/>queue · cache · rate limits")]
+        S[("Volume or S3<br/>receipt files")]
+    end
+
+    B -->|"HTTPS · session cookie"| W
+    B -->|"Bearer token · REST + SSE"| A
+    W -->|"sign-in · demo provisioning"| A
+
+    A --> P
+    A --> R
+    A --> S
+    K --> P
+    K --> R
+    K --> S
+    R -.->|"dequeue"| K
+```
+
+The browser calls the API **directly** for data rather than proxying through
+Next.js: Ask Ledger streams over SSE, and an extra hop buys nothing but
+buffering risk. Next.js is only in the path for the session and for minting
+tokens.
+
 ## Request paths
 
 ```
@@ -224,6 +260,150 @@ racing `alembic upgrade head` can leave a partially-applied migration, which is
 the worst state to recover from. In Compose that is a one-shot `migrate`
 service the others wait on; in a hosted environment it is a pre-deploy command
 on a single service.
+
+## Processing lifecycle: CSV and receipts
+
+One upload endpoint, one job, two branches — so idempotency, progress
+reporting and failure handling are written once.
+
+```mermaid
+flowchart TD
+    U["POST /api/uploads"] --> H{"content hash<br/>seen for this user?"}
+    H -->|"yes"| DUP["status: duplicate<br/>no job, no rows"]
+    H -->|"no"| ST["store bytes<br/>enqueue RQ job"]
+
+    ST --> Q["queued"]
+    Q --> EX["extracting"]
+
+    EX --> KIND{"CSV or image?"}
+
+    KIND -->|"CSV"| PARSE["parse · detect columns"]
+    PARSE --> NORM["normalizing<br/>merchant + dedupe hash"]
+    NORM --> CAT["categorizing<br/>corrections → rules → LLM"]
+    CAT --> INS["INSERT ... ON CONFLICT DO NOTHING<br/>on dedupe_hash"]
+    INS --> AN["analyzing<br/>alert detectors"]
+    AN --> OK["complete"]
+
+    KIND -->|"image / PDF"| OCR["OCR · Tesseract<br/>rasterize PDF pages"]
+    OCR --> FIELDS["parse merchant, date,<br/>subtotal, tax, tip, total"]
+    FIELDS --> REV["receipt: needs_review<br/>owns no transaction yet"]
+    REV --> USER{"user confirms"}
+    USER -->|"link"| LINK["attach to an existing transaction"]
+    USER -->|"create"| NEW["create transaction<br/>in Cash / Receipt Purchases"]
+
+    EX -.->|"raises"| FAIL["failed<br/>message the user can act on"]
+    OCR -.->|"raises"| FAIL
+    Q -.->|"worker killed;<br/>retention sweep"| FAIL
+
+    style DUP fill:#1e293b,stroke:#475569
+    style FAIL fill:#3f1d1d,stroke:#b91c1c
+    style OK fill:#14312a,stroke:#10b981
+```
+
+A receipt is **inert until confirmed**: it holds extracted values but owns no
+transaction, because turning a photo into spending is a decision the user
+makes, not one OCR makes.
+
+## Ask Ledger lifecycle
+
+```mermaid
+flowchart TD
+    Q["question"] --> CK{"cache hit?<br/>digest of user +<br/>question + data watermark"}
+    CK -->|"yes"| REPLAY["replay the stored run<br/>same steps, same numbers"]
+    CK -->|"no"| PLAN["understand<br/>rules engine → typed QueryPlan"]
+
+    PLAN --> VALID{"plan valid<br/>and in scope?"}
+    VALID -->|"no"| DECLINE["decline, and say why"]
+    VALID -->|"yes"| SEL["select<br/>parameterized SQL, user_id bound"]
+
+    SEL --> AGG["aggregate<br/>SUM/COUNT in Postgres"]
+    AGG --> VIZ["visualize<br/>chart spec from the result set"]
+    VIZ --> NARR["explain<br/>template, or LLM wording"]
+    NARR --> VER{"every number in the prose<br/>present in the result set?"}
+    VER -->|"no"| FALLBACK["fall back to the template"]
+    VER -->|"yes"| OUT["answer + chart + caveats"]
+    FALLBACK --> OUT
+    REPLAY --> OUT
+
+    style DECLINE fill:#3f2d15,stroke:#d97706
+    style VER fill:#1e293b,stroke:#818cf8
+    style OUT fill:#14312a,stroke:#10b981
+```
+
+Each box is streamed to the browser as it happens and can be expanded to show
+its own input and output. **The language model never computes a number** — it
+may choose a plan and word an explanation, and the numeric verification step
+rejects any sentence containing a figure that is not in the result set.
+
+## Demo account lifecycle
+
+```mermaid
+flowchart TD
+    CLICK["Try the demo"] --> LIMIT{"within<br/>DEMO_SESSION_LIMIT?"}
+    LIMIT -->|"no"| THROTTLE["429 · try again shortly"]
+    LIMIT -->|"yes"| KEY["claim UNIQUE request key"]
+
+    KEY --> RACE{"key already taken?"}
+    RACE -->|"yes"| REUSE["return the existing account<br/>retry is free"]
+    RACE -->|"no"| SEED["ONE transaction:<br/>user + 3 accounts<br/>+ ~250 transactions<br/>+ alerts"]
+
+    SEED --> FAILED{"seeding failed?"}
+    FAILED -->|"yes"| ROLL["roll back entirely<br/>no half-built account"]
+    FAILED -->|"no"| LIVE["demo_expires_at = now + 24h"]
+
+    LIVE --> USE["ordinary user row:<br/>every user_id predicate<br/>isolates it"]
+    USE --> CHECK{"on every request:<br/>demo_expires_at passed?"}
+    CHECK -->|"no"| USE
+    CHECK -->|"yes"| GONE["401 · demo session has ended"]
+
+    GONE --> SWEEP["hourly sweep"]
+    SWEEP --> PURGE["cascade DELETE user<br/>+ files + cache + queued jobs"]
+
+    style THROTTLE fill:#3f2d15,stroke:#d97706
+    style ROLL fill:#3f1d1d,stroke:#b91c1c
+    style PURGE fill:#3f1d1d,stroke:#b91c1c
+    style LIVE fill:#14312a,stroke:#10b981
+```
+
+Expiry is a **column, not a token claim**. The browser mints a fresh token
+whenever the old one nears expiry, so a token-borne deadline would let anyone
+who kept the tab open renew past it forever.
+
+## Deletion and retention lifecycle
+
+```mermaid
+flowchart TD
+    subgraph user["User-initiated"]
+        DD["Delete my data"] --> PRE["dry run:<br/>count the SAME tuple<br/>the delete iterates"]
+        PRE --> SHOW["show what goes<br/>AND what stays"]
+        SHOW --> TYPE{"typed DELETE?"}
+        TYPE -->|"no"| STOP["nothing removed"]
+        TYPE -->|"yes"| RUN["delete rows · files<br/>· cache · queued jobs"]
+        DA["Delete my account"] --> PRE
+    end
+
+    subgraph auto["Scheduled"]
+        CRON1["demo cleanup · hourly"] --> EXP["expired ephemeral demos"]
+        CRON2["retention · daily"] --> STUCK["jobs abandoned mid-pipeline"]
+        CRON2 --> OLDF["files of uploads failed >7d"]
+        CRON2 --> OLDR["receipts unconfirmed >30d"]
+    end
+
+    RUN --> FOUR["Postgres · storage · Redis · RQ"]
+    EXP --> FOUR
+    STUCK --> FOUR
+    OLDF --> FOUR
+    OLDR --> FOUR
+
+    style STOP fill:#1e293b,stroke:#475569
+    style FOUR fill:#3f1d1d,stroke:#b91c1c
+```
+
+The preview and the delete iterate **one shared tuple** (`DATA_ONLY_MODELS`).
+When they were two hand-maintained lists they drifted in both directions — the
+preview counted accounts that data-only deletion keeps, and omitted the
+categories it removes. For an irreversible operation whose entire purpose is
+informed consent, that is the preview lying about both halves.
 
 ## Caching
 

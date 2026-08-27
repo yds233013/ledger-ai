@@ -1,83 +1,16 @@
-'use client';
+import { Suspense } from 'react';
 
-import { signIn } from 'next-auth/react';
-import { useRouter, useSearchParams } from 'next/navigation';
-import { Suspense, useState } from 'react';
+import { githubEnabled } from '@/auth';
+import { SignInForm } from '@/components/auth/sign-in-form';
 
-import { Spinner } from '@/components/ui/primitives';
-
-function SignInForm() {
-  const router = useRouter();
-  const params = useSearchParams();
-  const callbackUrl = params.get('callbackUrl') ?? '/dashboard';
-
-  const [email, setEmail] = useState('demo@ledgerai.local');
-  const [password, setPassword] = useState('demo1234');
-  const [error, setError] = useState<string | null>(null);
-  const [submitting, setSubmitting] = useState(false);
-
-  async function handleSubmit(event: React.FormEvent) {
-    event.preventDefault();
-    setSubmitting(true);
-    setError(null);
-
-    const result = await signIn('credentials', { email, password, redirect: false });
-
-    if (result?.error) {
-      setError('Incorrect email or password.');
-      setSubmitting(false);
-      return;
-    }
-    router.push(callbackUrl);
-    router.refresh();
-  }
-
-  return (
-    <form onSubmit={handleSubmit} className="space-y-4">
-      <div>
-        <label htmlFor="email" className="label">
-          Email
-        </label>
-        <input
-          id="email"
-          type="email"
-          autoComplete="username"
-          required
-          value={email}
-          onChange={(event) => setEmail(event.target.value)}
-          className="input"
-        />
-      </div>
-
-      <div>
-        <label htmlFor="password" className="label">
-          Password
-        </label>
-        <input
-          id="password"
-          type="password"
-          autoComplete="current-password"
-          required
-          value={password}
-          onChange={(event) => setPassword(event.target.value)}
-          className="input"
-        />
-      </div>
-
-      {error ? (
-        <p role="alert" className="text-sm text-negative">
-          {error}
-        </p>
-      ) : null}
-
-      <button type="submit" disabled={submitting} className="btn-primary w-full">
-        {submitting ? <Spinner /> : null}
-        {submitting ? 'Signing in…' : 'Sign in'}
-      </button>
-    </form>
-  );
-}
-
+/**
+ * A server component, so it can read whether GitHub OAuth is configured.
+ *
+ * `githubEnabled` depends on server-only secrets, which must never reach the
+ * browser bundle. Resolving it here and passing a boolean down means an
+ * unconfigured deployment renders no GitHub button at all, rather than one
+ * that fails after the user commits to it.
+ */
 export default function SignInPage() {
   return (
     <div className="grid min-h-screen place-items-center px-4 py-12">
@@ -96,21 +29,16 @@ export default function SignInPage() {
         </div>
 
         <div className="card p-6">
-          <Suspense fallback={<div className="h-56" />}>
-            <SignInForm />
+          <Suspense fallback={<div className="h-80" />}>
+            <SignInForm githubEnabled={githubEnabled} />
           </Suspense>
-
-          <div className="mt-5 rounded-lg border border-line bg-surface-sunken p-3">
-            <p className="text-xs font-medium text-ink">Demo account</p>
-            <p className="mt-1 text-xs text-ink-muted">
-              <code className="font-mono">demo@ledgerai.local</code> /{' '}
-              <code className="font-mono">demo1234</code>
-            </p>
-            <p className="mt-2 text-xs text-ink-faint">
-              All data in this account is synthetic and generated for demonstration.
-            </p>
-          </div>
         </div>
+
+        <p className="mt-4 px-1 text-xs leading-relaxed text-ink-faint">
+          Every figure in Ledger AI&rsquo;s demo is synthetic and generated for
+          demonstration. It does not describe any real person, account or payment, and
+          Ledger AI does not connect to any financial institution.
+        </p>
       </div>
     </div>
   );

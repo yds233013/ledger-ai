@@ -193,16 +193,26 @@ export function AlertsPanel({
         ))
       )}
 
-      {hidden > 0 ? (
+      {openCount > 0 ? (
         <div className="flex flex-wrap items-center justify-between gap-2 border-t border-line px-5 py-3">
           <p className="text-xs text-ink-muted">
-            Showing {alerts.length} of {openCount} open alerts, most serious first.
+            {hidden > 0
+              ? `Showing ${alerts.length} of ${openCount} alerts, most serious first.`
+              : `Showing all ${openCount} open alerts, most serious first.`}
           </p>
+          {/*
+            ?flagged=1, NOT ?review=needs_review.
+            `needs_review` is the low-confidence categorization queue, which is
+            a different fact about a transaction: a duplicate charge at a
+            known merchant is categorized at confidence 1.00 and never enters
+            it. Linking there showed people transactions unrelated to the
+            alerts they had just been reading about.
+          */}
           <Link
-            href="/transactions?review=needs_review"
+            href="/transactions?flagged=1"
             className="text-xs font-medium text-brand hover:underline"
           >
-            Review flagged transactions
+            View all flagged transactions
           </Link>
         </div>
       ) : null}

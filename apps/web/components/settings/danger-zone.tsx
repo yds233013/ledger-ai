@@ -16,7 +16,7 @@ const COPY: Record<Mode, { title: string; button: string; warning: string }> = {
     title: 'Delete my data',
     button: 'Delete all my data',
     warning:
-      'Removes every transaction, upload, receipt, alert and saved analysis. Your account and sign-in stay.',
+      'Removes every transaction, upload, receipt, alert, correction, saved analysis and category you created. Your sign-in and your accounts stay.',
   },
   account: {
     title: 'Delete my account',
@@ -119,8 +119,12 @@ export function DangerZone() {
                   {Object.entries(preview.rows_by_table)
                     .filter(([, count]) => count > 0)
                     .map(([table, count]) => (
-                      <div key={table} className="grid grid-cols-[150px_1fr] gap-2">
-                        <dt className="text-xs text-ink-faint">{table.replace(/_/g, ' ')}</dt>
+                      <div key={table} className="grid grid-cols-[170px_1fr] gap-2">
+                        <dt className="text-xs text-ink-faint">
+                          {/* Server-supplied wording; the raw table name is the
+                              fallback, never the first choice. */}
+                          {preview.table_labels?.[table] ?? table.replace(/_/g, ' ')}
+                        </dt>
                         <dd className="text-xs tabular-nums text-ink">{count}</dd>
                       </div>
                     ))}
@@ -136,6 +140,21 @@ export function DangerZone() {
                 <p className="mt-3 text-xs leading-relaxed text-ink-muted">
                   Stored receipt files and every cached analysis are removed as well.
                 </p>
+
+                {preview.retained?.length ? (
+                  <div className="mt-3 border-t border-line pt-3">
+                    <p className="text-xs font-medium uppercase tracking-wide text-ink-muted">
+                      This will keep
+                    </p>
+                    <ul className="mt-1.5 space-y-0.5">
+                      {preview.retained.map((item) => (
+                        <li key={item} className="text-xs text-ink-muted">
+                          {item}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : null}
               </div>
             ) : null}
 

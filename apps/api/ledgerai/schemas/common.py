@@ -94,6 +94,9 @@ class UserOut(ORMModel):
     email: str
     display_name: str
     is_demo: bool
+    # Set only on ephemeral demo accounts, so the UI can say when this session
+    # ends instead of letting it stop working without explanation.
+    demo_expires_at: datetime | None = None
 
 
 class LoginRequest(BaseModel):

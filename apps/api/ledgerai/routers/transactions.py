@@ -13,6 +13,8 @@ from sqlalchemy import Select, and_, asc, desc, func, or_, select
 from ..deps import CurrentUser, DbSession
 from ..models import (
     Account,
+    Alert,
+    AlertStatus,
     Category,
     CorrectionField,
     CorrectionScope,
@@ -46,7 +48,35 @@ class FacetsOut(BaseModel):
     accounts: list[AccountOut]
     merchants: list[str]
     review_count: int
+    # Transactions carrying at least one OPEN alert. Distinct from
+    # review_count, which counts low-confidence categorization — see
+    # open_alert_exists() for why conflating the two would be wrong.
+    flagged_count: int
     total_count: int
+
+
+def open_alert_exists():  # noqa: ANN201 - SQLAlchemy Exists, spelled by the return
+    """Correlated EXISTS over this user's open alerts.
+
+    `flagged` and `needs_review` are deliberately independent filters over
+    unrelated facts. `needs_review` means the categorizer scored a row below
+    its confidence threshold. An alert means a detector noticed a duplicate, an
+    unusual amount, a first-time merchant or an outlier for that merchant —
+    none of which says anything about how confidently the row was categorized.
+    A duplicated charge at a well-known merchant is categorized at confidence
+    1.00 and is not in the review queue, yet it is exactly what someone
+    following "view all flagged transactions" from the dashboard expects to
+    find. Correlating on Transaction.id keeps the alert scope inside the
+    user-scoped outer query, so no second user predicate can be forgotten.
+    """
+    return (
+        select(Alert.id)
+        .where(
+            Alert.transaction_id == Transaction.id,
+            Alert.status == AlertStatus.OPEN,
+        )
+        .exists()
+    )
 
 
 def _serialize(row) -> TransactionOut:  # noqa: ANN001 - Row from the select below
@@ -91,6 +121,7 @@ def _apply_filters(  # noqa: PLR0913
     category_slug: str | None,
     merchant: str | None,
     review: str | None,
+    flagged: bool,
     min_amount: float | None,
     max_amount: float | None,
 ) -> Select:
@@ -116,6 +147,8 @@ def _apply_filters(  # noqa: PLR0913
         )
     if merchant:
         stmt = stmt.where(Transaction.merchant == merchant)
+    if flagged:
+        stmt = stmt.where(open_alert_exists())
     if review == "needs_review":
         stmt = stmt.where(Transaction.needs_review.is_(True))
     elif review == "corrected":
@@ -140,6 +173,13 @@ async def list_transactions(  # noqa: PLR0913
     category_slug: str | None = Query(default=None, max_length=80),
     merchant: str | None = Query(default=None, max_length=200),
     review: str | None = Query(default=None, pattern="^(needs_review|corrected|reviewed)$"),
+    flagged: bool = Query(
+        default=False,
+        description=(
+            "Only transactions carrying an open alert. Independent of `review`: "
+            "an alerted charge is often categorized with full confidence."
+        ),
+    ),
     min_amount: float | None = None,
     max_amount: float | None = None,
     sort: str = Query(default="date", pattern="^(date|amount|merchant|confidence)$"),
@@ -171,6 +211,7 @@ async def list_transactions(  # noqa: PLR0913
         category_slug=category_slug,
         merchant=merchant,
         review=review,
+        flagged=flagged,
         min_amount=min_amount,
         max_amount=max_amount,
     )
@@ -230,6 +271,7 @@ async def facets(user: CurrentUser, session: DbSession) -> FacetsOut:
             select(
                 func.count(Transaction.id),
                 func.count(Transaction.id).filter(Transaction.needs_review.is_(True)),
+                func.count(Transaction.id).filter(open_alert_exists()),
             ).where(Transaction.user_id == user.id)
         )
     ).one()
@@ -240,6 +282,7 @@ async def facets(user: CurrentUser, session: DbSession) -> FacetsOut:
         merchants=list(merchants),
         total_count=counts[0],
         review_count=counts[1],
+        flagged_count=counts[2],
     )
 
 

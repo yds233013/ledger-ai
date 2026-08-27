@@ -78,12 +78,17 @@ export function clearTokenCache(): void {
  */
 let redirecting = false;
 
-async function handleUnauthorized(): Promise<void> {
+async function handleUnauthorized(reason?: 'demo-expired'): Promise<void> {
   clearTokenCache();
   if (redirecting || typeof window === 'undefined') return;
   redirecting = true;
   const { signOut } = await import('next-auth/react');
-  await signOut({ callbackUrl: '/sign-in' });
+  // The reason travels in the URL so the sign-in page can explain what
+  // happened. A demo that ends is not the same event as a session that was
+  // revoked, and being told which one it was is the difference between
+  // "expected" and "broken".
+  const callbackUrl = reason === 'demo-expired' ? '/sign-in?demo=expired' : '/sign-in';
+  await signOut({ callbackUrl });
 }
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
@@ -105,8 +110,19 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   }
 
   if (response.status === 401) {
-    void handleUnauthorized();
-    throw new ApiError('Your session has expired. Redirecting you to sign in…', 401);
+    let detail = '';
+    try {
+      const body = await response.clone().json();
+      if (typeof body?.detail === 'string') detail = body.detail;
+    } catch {
+      /* non-JSON body — fall through to the generic path */
+    }
+    const demoExpired = detail.toLowerCase().includes('demo session has ended');
+    void handleUnauthorized(demoExpired ? 'demo-expired' : undefined);
+    throw new ApiError(
+      demoExpired ? detail : 'Your session has expired. Redirecting you to sign in…',
+      401,
+    );
   }
   if (!response.ok) {
     let detail = `Request failed (${response.status})`;
@@ -131,6 +147,13 @@ export interface TransactionQuery {
   category_slug?: string;
   merchant?: string;
   review?: 'needs_review' | 'corrected' | 'reviewed';
+  /**
+   * Only transactions carrying an open alert.
+   *
+   * Deliberately separate from `review`: an alerted charge is often
+   * categorized with full confidence and so is absent from the review queue.
+   */
+  flagged?: boolean;
   min_amount?: number;
   max_amount?: number;
   sort?: 'date' | 'amount' | 'merchant' | 'confidence';

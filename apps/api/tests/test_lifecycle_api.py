@@ -16,8 +16,6 @@ from ledgerai.security.ratelimit import (
     DESTRUCTIVE_LIMIT,
     EXPORT_LIMIT,
     LOGIN_LIMIT,
-    get_limiter_redis,
-    reset_limiter,
 )
 from tests.test_receipts_api import seed_receipt
 
@@ -29,6 +27,11 @@ CONFIRM = {"confirmation": "DELETE"}
 class BrokenRedis:
     """A rate-limit store that is down. Every operation refuses."""
 
+    async def eval(self, *_args, **_kwargs):
+        # The limiter runs its INCR+PEXPIRE as one atomic EVAL, so this is the
+        # call that has to fail for the outage to be simulated honestly.
+        raise ConnectionError("redis://user:hunter2@cache.internal:6379 is down")
+
     async def incr(self, *_args, **_kwargs):
         raise ConnectionError("redis://user:hunter2@cache.internal:6379 is down")
 
@@ -37,20 +40,6 @@ class BrokenRedis:
 
     async def ping(self, *_args, **_kwargs):
         raise ConnectionError("redis://user:hunter2@cache.internal:6379 is down")
-
-
-@pytest.fixture(autouse=True)
-async def _clear_rate_limits():
-    """Each test starts with a fresh budget."""
-    reset_limiter(None)
-    try:
-        client = get_limiter_redis()
-        keys = [key async for key in client.scan_iter("ratelimit:*")]
-        if keys:
-            await client.delete(*keys)
-    except Exception:  # noqa: BLE001, S110 - a limiter outage is not this test's concern
-        reset_limiter(None)
-    yield
 
 
 class TestExportEndpoint:

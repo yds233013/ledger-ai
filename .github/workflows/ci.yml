@@ -208,11 +208,28 @@ jobs:
         with:
           context: ./apps/api
           file: ./apps/api/Dockerfile
+          target: api
           tags: ledgerai-api:ci
           load: true
           push: false
           cache-from: type=gha,scope=api
           cache-to: type=gha,mode=max,scope=api
+
+      # Built as its own target from the same clean context, NOT from a
+      # previously-built local tag. This step would fail outright if the worker
+      # ever went back to `FROM ledgerai-api:latest`, because no such image
+      # exists on a CI runner.
+      - name: Build the worker image
+        uses: docker/build-push-action@48aba3b46d1b1fec4febb7c5d0c644b249a11355 # v6.10.0
+        with:
+          context: ./apps/api
+          file: ./apps/api/Dockerfile
+          target: worker
+          tags: ledgerai-worker:ci
+          load: true
+          push: false
+          cache-from: type=gha,scope=worker
+          cache-to: type=gha,mode=max,scope=worker
 
       - name: Build the web image
         uses: docker/build-push-action@48aba3b46d1b1fec4febb7c5d0c644b249a11355 # v6.10.0
@@ -228,7 +245,7 @@ jobs:
 
       - name: Containers run as non-root
         run: |
-          for image in ledgerai-api:ci ledgerai-web:ci; do
+          for image in ledgerai-api:ci ledgerai-web:ci ledgerai-worker:ci; do
             uid=$(docker run --rm --entrypoint sh "$image" -c 'id -u')
             echo "$image runs as uid $uid"
             if [ "$uid" = "0" ]; then
@@ -242,3 +259,38 @@ jobs:
           docker run --rm --entrypoint sh ledgerai-api:ci -c \
             'tesseract --version >/dev/null && python -c "from ledgerai.main import app"'
           echo "API image imports the application and has Tesseract"
+
+      - name: The worker image can actually run the queue consumer
+        run: |
+          # `rq worker --help` exercises the real entry point without needing a
+          # Redis to connect to, so a missing dependency or an unimportable job
+          # module fails here rather than in production.
+          docker run --rm --entrypoint sh ledgerai-worker:ci -c \
+            'rq worker --help >/dev/null             && python -c "from ledgerai.jobs.process_upload import process_upload"             && python -c "from ledgerai.jobs.retention import run_retention_sweep"             && tesseract --version >/dev/null'
+          echo "worker image can start a worker and import its job modules"
+
+      - name: The worker HOME is writable by the non-root user
+        run: |
+          # rq keeps bookkeeping in HOME; a read-only HOME fails at runtime only.
+          docker run --rm --entrypoint sh ledgerai-worker:ci -c \
+            'touch "${HOME}/.ci-probe" && rm "${HOME}/.ci-probe"'
+          echo "worker HOME is writable"
+
+      # LAST, because it deletes the API image other steps in this job need.
+      - name: The worker image depends on no local tag
+        run: |
+          # Remove every API tag, then rebuild the worker from source alone. If
+          # the worker's base went back to `FROM ledgerai-api:latest` this would
+          # fail with "pull access denied" — the exact regression being pinned.
+          docker image rm -f ledgerai-api:ci ledgerai-api:latest >/dev/null 2>&1 || true
+          docker build --target worker -t ledgerai-worker:isolated ./apps/api
+          echo "worker rebuilt from a clean context with no api image present"
+
+      - name: Compose files are valid
+        env:
+          AUTH_SECRET: ci-only-secret-not-used-anywhere-else-000000
+          DEMO_USER_PASSWORD: ci-only-demo-password
+        run: |
+          docker compose -f docker-compose.yml config >/dev/null
+          docker compose -f docker-compose.prod.yml config >/dev/null
+          echo "both compose files parse"
