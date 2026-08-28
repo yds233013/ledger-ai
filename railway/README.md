@@ -18,11 +18,9 @@ about itself.
 
 **Five services, not seven.** Railway's Hobby plan caps a project at five, and
 Postgres, Redis, `api`, `worker` and `web` fill it exactly. The two cron
-services this directory once described have been folded into the worker, which
-runs both sweeps on a Redis-locked schedule — see `ledgerai/maintenance/` and
-docs/deployment.md, "Maintenance scheduling". `cron-demo-cleanup.json` and
-`cron-retention.json` remain here as the deploy-them-separately configuration
-for anyone on a plan with room; nothing deploys them today.
+services this directory once described are gone: both sweeps now run inside the
+worker on a Redis-locked schedule — see `ledgerai/maintenance/` and
+docs/deployment.md, "Maintenance scheduling".
 
 **Root Directory is the Docker build context**, which is why it is not
 optional. `apps/web/Dockerfile` begins `COPY package.json package-lock.json ./`
@@ -56,15 +54,20 @@ matches its role.
 Compose and CI still build both targets explicitly (`--target api`,
 `--target worker`), so the worker target does not become dead code.
 
-## Cron services
+## Maintenance
 
-`cron-demo-cleanup` and `cron-retention` are ordinary services with a
-`cronSchedule`: Railway starts the container on the schedule, runs the start
-command, and expects it to exit. `restartPolicyType` is `NEVER` because a
-failed sweep must not restart-loop — it should show as a failed run and wait
-for the next tick.
+There are no cron services. `cron-demo-cleanup.json` and `cron-retention.json`
+were deleted along with the services they configured.
 
-Their start commands are console scripts installed by the package itself
-(`ledgerai-demo-cleanup`, `ledgerai-retention-sweep`), so they resolve on PATH
-inside the image. The repository-root `scripts/` directory is **not** in the
-image and cannot be invoked from a deployed container.
+Both sweeps run on a daemon thread inside the `worker` service, which is why its
+start command is `ledgerai-worker` rather than a bare `rq worker` — that entry
+point starts the RQ consumer *and* the schedule in one process. A Redis lock
+keeps exactly one replica running each sweep, and the last-run timestamp lives
+in Redis so restarts neither repeat nor skip a run.
+
+`ledgerai-demo-cleanup` and `ledgerai-retention-sweep` remain installed console
+scripts, so an operator can still force a sweep:
+
+```bash
+railway run --service worker ledgerai-demo-cleanup
+```

@@ -21,17 +21,15 @@ from pathlib import Path
 
 import pytest
 
-from ledgerai import cli
-
 API_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = API_ROOT.parents[1]
 RAILWAY_DIR = REPO_ROOT / "railway"
 
-SERVICES = ("api", "worker", "web", "cron-demo-cleanup", "cron-retention")
+SERVICES = ("api", "worker", "web")
 
-# Services whose image is built from apps/api, and which therefore all receive
+# Services whose image is built from apps/api, and which therefore both receive
 # the `api` stage. Their start commands must differ.
-API_ROOTED = ("api", "worker", "cron-demo-cleanup", "cron-retention")
+API_ROOTED = ("api", "worker")
 
 
 def load(service: str) -> dict:
@@ -158,49 +156,39 @@ class TestHealthchecks:
     def test_the_worker_has_no_http_healthcheck(self) -> None:
         assert "healthcheckPath" not in load("worker")["deploy"]
 
-    @pytest.mark.parametrize("service", ("cron-demo-cleanup", "cron-retention"))
-    def test_cron_services_have_no_healthcheck(self, service: str) -> None:
-        """They exit by design; a healthcheck would call that a failure."""
-        assert "healthcheckPath" not in load(service)["deploy"]
+class TestMaintenanceHasNoServiceOfItsOwn:
+    """The sweeps moved into the worker; their config files are gone.
 
+    Railway's Hobby plan caps a project at five services, which Postgres, Redis,
+    api, worker and web fill exactly. Leaving the cron configs behind would
+    describe a deployment that does not exist and cannot exist on this plan.
+    """
 
-class TestScheduledSweeps:
-    @pytest.mark.parametrize(
-        ("service", "schedule"),
-        [("cron-demo-cleanup", "0 * * * *"), ("cron-retention", "0 4 * * *")],
-    )
-    def test_each_sweep_is_scheduled(self, service: str, schedule: str) -> None:
-        assert load(service)["deploy"]["cronSchedule"] == schedule
+    def test_the_cron_config_files_are_gone(self) -> None:
+        assert not (RAILWAY_DIR / "cron-demo-cleanup.json").exists()
+        assert not (RAILWAY_DIR / "cron-retention.json").exists()
 
-    def test_demo_cleanup_runs_more_often_than_retention(self) -> None:
-        """Demo accounts expire on a 24-hour clock; a daily sweep is too slow."""
-        assert load("cron-demo-cleanup")["deploy"]["cronSchedule"].endswith("* * * *")
+    def test_no_config_declares_a_cron_schedule(self) -> None:
+        for service in SERVICES:
+            assert "cronSchedule" not in load(service)["deploy"]
 
-    @pytest.mark.parametrize("service", ("cron-demo-cleanup", "cron-retention"))
-    def test_a_failed_sweep_does_not_restart_loop(self, service: str) -> None:
-        assert load(service)["deploy"]["restartPolicyType"] == "NEVER"
+    def test_the_worker_is_what_schedules_them(self) -> None:
+        """The start command is the load-bearing part: `rq worker` would drain
+        the queue but never sweep."""
+        assert load("worker")["deploy"]["startCommand"] == "ledgerai-worker"
 
-    @pytest.mark.parametrize("service", ("cron-demo-cleanup", "cron-retention"))
-    def test_the_scheduled_command_actually_exists_in_the_image(
-        self, service: str
-    ) -> None:
-        """The original bug, asserted from the deployment side.
+        from ledgerai.maintenance import default_sweeps
 
-        A scheduled command that is not an installed console script is a run
-        that fails at 04:00 with "not found" and is noticed weeks later.
-        """
-        command = load(service)["deploy"]["startCommand"]
+        assert {s.name for s in default_sweeps()} == {"demo-cleanup", "retention"}
+
+    def test_the_sweeps_stay_invocable_by_hand(self) -> None:
+        """`railway run --service worker ledgerai-demo-cleanup` must still work."""
         pyproject = tomllib.loads((API_ROOT / "pyproject.toml").read_text())
-        assert command in pyproject["project"]["scripts"]
+        scripts = pyproject["project"]["scripts"]
+        assert "ledgerai-demo-cleanup" in scripts
+        assert "ledgerai-retention-sweep" in scripts
 
-        # ...and it resolves to a command the dispatcher knows about.
-        target = pyproject["project"]["scripts"][command]
-        assert target.startswith("ledgerai.cli:")
-        assert target.partition(":")[2] in {
-            function.__name__ for function in cli.COMMANDS.values()
-        }
-
-    def test_no_sweep_is_invoked_through_the_repo_scripts_directory(self) -> None:
+    def test_no_service_is_invoked_through_the_repo_scripts_directory(self) -> None:
         """`scripts/` is not in the build context and never will be."""
         for service in SERVICES:
             assert "scripts/" not in load(service)["deploy"]["startCommand"]
