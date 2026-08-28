@@ -98,8 +98,33 @@ class TestServicesCannotStartAsEachOther:
 
     def test_the_worker_consumes_the_queue_and_is_not_a_second_api(self) -> None:
         command = load("worker")["deploy"]["startCommand"]
-        assert command.startswith("rq worker ledgerai")
+        assert "rq worker ledgerai" in command
         assert "uvicorn" not in command
+
+    def test_the_worker_redis_url_is_expanded_by_a_shell(self) -> None:
+        """The same defect the API's `--port $PORT` had, one variable along.
+
+        Railway execs the start command rather than handing it to a shell, so
+        an unwrapped `--url "$REDIS_URL"` reaches rq as that literal text and
+        it dies on:
+
+            ValueError: Redis URL must specify one of the following schemes
+            (redis://, rediss://, unix://)
+
+        `sh -c` is what expands it. The Dockerfile's worker CMD already did
+        this; the Railway config overrides CMD, so it has to as well.
+        """
+        command = load("worker")["deploy"]["startCommand"]
+        assert command.startswith("sh -c ")
+        assert "$REDIS_URL" in command
+
+    def test_the_worker_stays_pid_1_so_rq_can_drain(self) -> None:
+        """`exec` replaces the shell, so rq receives SIGTERM itself and runs
+        its warm shutdown — finishing the job in flight rather than abandoning
+        a half-processed receipt. That is what `drainingSeconds` buys, and it
+        buys nothing if a shell swallows the signal.
+        """
+        assert "exec rq worker" in load("worker")["deploy"]["startCommand"]
 
     def test_the_web_service_runs_the_next_server(self) -> None:
         command = load("web")["deploy"]["startCommand"]
