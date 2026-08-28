@@ -152,6 +152,44 @@ async def validation_handler(request: Request, exc: RequestValidationError) -> J
     )
 
 
+# Logged at most once per process: a missing taxonomy is a persistent
+# condition, and repeating it on every probe would bury the rest of the log.
+_warned_reference_data_missing = False
+
+
+async def _probe_reference_data() -> bool:
+    """Whether the system category taxonomy has actually been loaded.
+
+    Its absence is invisible from the outside and catastrophic in a quiet way:
+    the categorizer still runs and still returns answers, but `ingest_rows`
+    resolves those slugs through a table with no rows, so every transaction is
+    written with a NULL category and the whole product looks like it simply
+    cannot categorize anything.
+
+    This does NOT make the instance unready. The API serves uploads, search,
+    receipts and deletion perfectly well without it, and refusing traffic would
+    turn a degraded feature into an outage. It is reported, and warned about
+    once, so the condition is visible rather than inferred from screenshots.
+    """
+    global _warned_reference_data_missing
+    try:
+        async with async_engine.connect() as connection:
+            result = await connection.execute(
+                text("SELECT COUNT(*) FROM categories WHERE user_id IS NULL")
+            )
+            count = int(result.scalar_one())
+    except Exception:  # noqa: BLE001 - an unreachable database is reported separately
+        return False
+
+    if count == 0 and not _warned_reference_data_missing:
+        _warned_reference_data_missing = True
+        logger.error(
+            "reference_data.missing table=categories system_rows=0 — transactions "
+            "cannot be categorized until the taxonomy migration has been applied"
+        )
+    return count > 0
+
+
 async def _probe_database() -> bool:
     """Whether the database answers right now.
 
@@ -219,6 +257,7 @@ async def readiness(response: Response) -> dict[str, object]:
     """
     database_ok = await _probe_database()
     limiter_ok = await probe_limiter_store()
+    reference_data_ok = await _probe_reference_data() if database_ok else False
     # Only the public/production combination is disqualifying.
     limiter_blocks_traffic = not limiter_ok and settings.is_production
 
@@ -231,6 +270,9 @@ async def readiness(response: Response) -> dict[str, object]:
         reasons.append("database_unavailable")
     if limiter_blocks_traffic:
         reasons.append("rate_limit_store_unavailable")
+    # Reported, but deliberately not disqualifying — see _probe_reference_data.
+    if database_ok and not reference_data_ok:
+        reasons.append("reference_data_missing")
 
     return {
         "status": "ready" if ready else "not_ready",
@@ -239,6 +281,7 @@ async def readiness(response: Response) -> dict[str, object]:
         "dependencies": {
             "database": "ok" if database_ok else "unavailable",
             "rate_limit_store": "ok" if limiter_ok else "unavailable",
+            "reference_data": "ok" if reference_data_ok else "missing",
         },
         "reasons": reasons,
     }

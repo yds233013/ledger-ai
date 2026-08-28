@@ -73,6 +73,35 @@ The sweep implementations are untouched in `ledgerai/jobs/` and remain
 individually invocable (`ledgerai-demo-cleanup`, `ledgerai-retention-sweep`) for
 a manual run. Only the scheduling moved.
 
+## Reference data and the categorization taxonomy
+
+The deterministic categorizer needs two tables populated before it can place
+anything: `categories` (the 14 system slugs) and `merchant_rules` (428
+patterns). Both are installed by an Alembic data migration, so a database that
+has been migrated is a database that can categorize.
+
+They used to be created only by the synthetic seed script, which does not exist
+inside the runtime image, and the resulting failure is worth remembering because
+of how quiet it was. `build_context()` falls back to reading the YAML when
+`merchant_rules` is empty, so the engine kept returning `dining`, `groceries`
+and so on with 0.90 confidence — but `ingest_rows()` maps a slug to an id
+through `resolve_category_ids()`, which returned `{}`, so every write landed
+`category_id = NULL`. Nothing errored. The pipeline reported success. The
+product simply looked like it could not categorize.
+
+Two consequences shaped the fix:
+
+* **The migration owns reference data; the application owns behaviour.** The
+  migration embeds a frozen snapshot of the YAML so it is reproducible, and a
+  test ties the snapshot to the canonical file so they cannot drift.
+* **The repair for existing rows is not in the migration.** Re-categorizing runs
+  the real engine, which means ORM models and service code — importing those
+  into a migration makes it break the moment either changes shape. It lives in
+  `ledgerai/jobs/backfill.py` behind `ledgerai-backfill-categories` instead.
+
+`/health/ready` reports `reference_data: ok | missing` so the condition is
+visible rather than inferred from a screenshot of empty charts.
+
 ## Request paths
 
 ```

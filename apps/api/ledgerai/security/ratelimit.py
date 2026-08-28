@@ -27,9 +27,11 @@ attack next.
 
 from __future__ import annotations
 
+import hashlib
 import logging
+import secrets
 from dataclasses import dataclass
-from ipaddress import ip_address
+from ipaddress import ip_address, ip_network
 
 from fastapi import HTTPException, Request, status
 from redis.asyncio import Redis
@@ -37,6 +39,34 @@ from redis.asyncio import Redis
 from ..config import settings
 
 logger = logging.getLogger(__name__)
+
+# The only ranges an address may be logged verbatim from: machines we or the
+# platform run. Listed explicitly rather than using `ipaddress.is_private`,
+# which also covers RFC 5737 documentation space (203.0.113.0/24 and friends),
+# reserved space and 0.0.0.0/8 — none of which are our infrastructure, and all
+# of which would then be written out in full. Anything not listed here is
+# treated as a visitor address and only ever hashed, so the failure mode of an
+# unfamiliar range is to over-redact.
+_INFRASTRUCTURE_NETWORKS = (
+    ip_network("100.64.0.0/10"),   # RFC 6598 CGNAT — Railway's inbound hops
+    ip_network("10.0.0.0/8"),      # RFC 1918
+    ip_network("172.16.0.0/12"),   # RFC 1918
+    ip_network("192.168.0.0/16"),  # RFC 1918
+    ip_network("fc00::/7"),        # IPv6 unique local
+)
+
+_INFRASTRUCTURE_CLASS = {
+    ip_network("100.64.0.0/10"): "cgnat",
+    ip_network("10.0.0.0/8"): "private",
+    ip_network("172.16.0.0/12"): "private",
+    ip_network("192.168.0.0/16"): "private",
+    ip_network("fc00::/7"): "private",
+}
+
+# Per-process, never persisted. Public addresses are only ever logged as a
+# digest under this salt, so the digests cannot be correlated across restarts
+# or reversed to an address.
+_HASH_SALT = secrets.token_bytes(16)
 
 _client: Redis | None = None
 
@@ -139,6 +169,78 @@ def resolve_client_ip(peer: str, forwarded_header: str) -> str:
 _warned_about_untrusted_proxy = False
 
 
+def classify_address(candidate: str) -> str:
+    """Which kind of address this is, without saying which address it is.
+
+    The classes that matter here are the ones that tell you whether a hop is
+    infrastructure or a person. Anything in the first four is a machine we or
+    the platform runs; `public` is somebody's actual internet address.
+    """
+    try:
+        parsed = ip_address(candidate)
+    except ValueError:
+        return "invalid"
+    if parsed.is_loopback:
+        return "loopback"
+    if parsed.is_link_local:
+        return "link_local"
+    for network in _INFRASTRUCTURE_NETWORKS:
+        if parsed.version == network.version and parsed in network:
+            return _INFRASTRUCTURE_CLASS[network]
+    # Everything else — including documentation and reserved space — is treated
+    # as a visitor address and hashed. Over-redacting an odd range is the safe
+    # direction; writing out somebody's address is not.
+    return "public"
+
+
+def sanitize_address(candidate: str) -> str:
+    """An address safe to write to a log.
+
+    Infrastructure addresses are recorded exactly — they are the values
+    TRUSTED_PROXY_IPS needs, and they identify a machine rather than a person.
+    A public address is a visitor's, so only its class and a short salted digest
+    are recorded: enough to tell two visitors apart within one log, useless for
+    identifying either. The salt is per-process and never persisted, so the
+    digests cannot be correlated across restarts or back to an address.
+    """
+    kind = classify_address(candidate)
+    if kind in {"loopback", "link_local", "cgnat", "private"}:
+        return f"{kind}:{candidate}"
+    if kind == "invalid":
+        return "invalid"
+    digest = hashlib.sha256(_HASH_SALT + candidate.encode()).hexdigest()[:8]
+    return f"public:sha256-{digest}"
+
+
+def describe_chain(peer: str, forwarded_header: str) -> dict[str, object]:
+    """A sanitized account of one forwarded chain and how trust reads it.
+
+    Everything here is either an infrastructure address, a class name, a
+    boolean or a hash. No header, token, cookie or full public address is
+    included, and the chain's own contents are only ever rendered through
+    `sanitize_address`.
+    """
+    hops = [part.strip() for part in forwarded_header.split(",") if part.strip()]
+    return {
+        "peer": sanitize_address(peer),
+        "peer_class": classify_address(peer),
+        "peer_trusted": _is_trusted_proxy(peer),
+        "hop_count": len(hops),
+        # Position 1 is leftmost, as the header is written.
+        "hops": [
+            {
+                "position": index,
+                "class": classify_address(hop),
+                "value": sanitize_address(hop),
+                "trusted": _is_trusted_proxy(hop),
+            }
+            for index, hop in enumerate(hops, start=1)
+        ],
+        "resolved_identity": sanitize_address(resolve_client_ip(peer, forwarded_header)),
+        "trust_active": settings.proxy_trust_active,
+    }
+
+
 def _warn_once_about_untrusted_proxy(peer: str, forwarded_header: str) -> None:
     """Report a proxy in front of us that we are not configured to trust.
 
@@ -149,28 +251,31 @@ def _warn_once_about_untrusted_proxy(peer: str, forwarded_header: str) -> None:
 
     This exists because no hosting provider used by this project publishes a
     stable, authoritative CIDR for its inbound edge, and guessing one is worse
-    than not setting it. The address logged here is the *proxy's*, observed
-    from the deployment itself, and it is the value TRUSTED_PROXY_IPS wants.
+    than not setting it. The addresses logged here are infrastructure, observed
+    from the deployment itself, and they are what TRUSTED_PROXY_IPS wants.
 
-    Only the peer and the chain's length are recorded. The chain's contents are
-    caller addresses; the peer, in the branch that reaches this function, is
-    infrastructure rather than a user.
+    Emitted once per process: the condition is a property of the deployment,
+    not of a request, and repeating it per request would flood the log of the
+    very deployment that is already misconfigured.
     """
     global _warned_about_untrusted_proxy
     if _warned_about_untrusted_proxy:
         return
     _warned_about_untrusted_proxy = True
 
-    hops = len([part for part in forwarded_header.split(",") if part.strip()])
+    chain = describe_chain(peer, forwarded_header)
     logger.warning(
-        "Rate limits are keyed by the socket peer %s, but requests carry an "
-        "X-Forwarded-For chain of %d hop(s), so every caller behind that proxy "
-        "shares one budget. If %s is a proxy you operate, set "
-        "TRUST_PROXY_HEADERS=true and TRUSTED_PROXY_IPS to its address or CIDR. "
-        "Do not guess the range — this is the address to use.",
-        peer,
-        hops,
-        peer,
+        "proxy.untrusted_chain peer=%s peer_class=%s hop_count=%s hops=%s "
+        "resolved_identity=%s trust_active=%s — rate limits are keyed by the "
+        "peer, so every caller behind it shares one budget. Set "
+        "TRUST_PROXY_HEADERS=true and TRUSTED_PROXY_IPS from the infrastructure "
+        "addresses above. Do not guess the range.",
+        chain["peer"],
+        chain["peer_class"],
+        chain["hop_count"],
+        chain["hops"],
+        chain["resolved_identity"],
+        chain["trust_active"],
     )
 
 

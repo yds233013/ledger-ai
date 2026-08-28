@@ -235,13 +235,15 @@ class TestAnUntrustedProxyIsReportedOnce:
         assert "TRUSTED_PROXY_IPS" in caplog.text
 
     def test_the_report_names_the_proxy_and_not_the_caller(self, caplog) -> None:
-        """The chain's contents are user IP addresses. Only the hop count and
-        the peer — infrastructure, in this branch — may be recorded."""
+        """The chain's contents are visitor addresses. The peer is
+        infrastructure in this branch and is recorded exactly, because it is
+        the value TRUSTED_PROXY_IPS needs; the hops are hashed."""
         with caplog.at_level("WARNING"):
             client_identifier(make_request("10.1.2.3", "203.0.113.9, 198.51.100.4"))
         assert "203.0.113.9" not in caplog.text
         assert "198.51.100.4" not in caplog.text
-        assert "2 hop(s)" in caplog.text
+        assert "hop_count=2" in caplog.text
+        assert "private:10.1.2.3" in caplog.text
 
     def test_it_is_logged_once_not_once_per_request(self, caplog) -> None:
         """A per-request warning would flood the log of the very deployment
@@ -351,3 +353,120 @@ class TestCounterAlwaysCarriesATtl:
         for _ in range(limit.times + 5):
             _allowed, remaining, _available = await check_rate_limit("someone", limit)
             assert remaining >= 0
+
+
+# --------------------------------------------------------------------------
+# The sanitized chain diagnostic
+# --------------------------------------------------------------------------
+
+
+class TestChainDiagnosticSanitization:
+    """Enough detail to configure TRUSTED_PROXY_IPS, and nothing more.
+
+    The question it answers — "which hop is infrastructure, and where does the
+    right-to-left walk stop?" — needs real addresses for the infrastructure
+    hops, because those are the values that go into the allow-list. It does not
+    need the visitor's address, so that one never appears.
+    """
+
+    def test_infrastructure_addresses_are_recorded_exactly(self) -> None:
+        """These are the values TRUSTED_PROXY_IPS is set from."""
+        assert ratelimit.sanitize_address("100.64.0.7") == "cgnat:100.64.0.7"
+        assert ratelimit.sanitize_address("10.1.2.3") == "private:10.1.2.3"
+        assert ratelimit.sanitize_address("127.0.0.1") == "loopback:127.0.0.1"
+        assert ratelimit.sanitize_address("169.254.1.1") == "link_local:169.254.1.1"
+
+    def test_a_public_address_is_never_written_out(self) -> None:
+        rendered = ratelimit.sanitize_address("203.0.113.9")
+        assert "203.0.113.9" not in rendered
+        assert rendered.startswith("public:sha256-")
+
+    def test_two_public_addresses_are_distinguishable_but_opaque(self) -> None:
+        a = ratelimit.sanitize_address("203.0.113.9")
+        b = ratelimit.sanitize_address("198.51.100.4")
+        assert a != b
+        assert "203.0" not in a and "198.51" not in b
+
+    def test_the_same_address_is_stable_within_a_process(self) -> None:
+        """So two hops can be compared, without the value being recoverable."""
+        assert ratelimit.sanitize_address("203.0.113.9") == ratelimit.sanitize_address(
+            "203.0.113.9"
+        )
+
+    def test_classes_are_named_correctly(self) -> None:
+        assert ratelimit.classify_address("100.64.0.7") == "cgnat"
+        assert ratelimit.classify_address("203.0.113.9") == "public"
+        assert ratelimit.classify_address("not-an-address") == "invalid"
+
+
+class TestChainDiagnosticDescribesTheWalk:
+    def test_it_reports_each_hop_position_class_and_trust(self) -> None:
+        chain = ratelimit.describe_chain("100.64.0.7", "203.0.113.9, 100.64.0.3")
+
+        assert chain["peer"] == "cgnat:100.64.0.7"
+        assert chain["hop_count"] == 2
+        hops = chain["hops"]
+        assert hops[0]["position"] == 1 and hops[0]["class"] == "public"
+        assert hops[1]["position"] == 2 and hops[1]["class"] == "cgnat"
+        assert hops[1]["value"] == "cgnat:100.64.0.3"
+        # Untrusted by default, which is the whole point of the diagnostic.
+        assert chain["peer_trusted"] is False
+        assert chain["trust_active"] is False
+
+    def test_the_visitor_address_is_absent_from_the_whole_payload(self) -> None:
+        chain = ratelimit.describe_chain("100.64.0.7", "203.0.113.9, 100.64.0.3")
+        assert "203.0.113.9" not in str(chain)
+
+    def test_with_trust_off_the_identity_is_the_peer(self) -> None:
+        chain = ratelimit.describe_chain("100.64.0.7", "203.0.113.9, 100.64.0.3")
+        assert chain["resolved_identity"] == "cgnat:100.64.0.7"
+
+    def test_with_the_right_allow_list_the_walk_reaches_the_visitor(
+        self, trust_proxy
+    ) -> None:
+        """Both infrastructure hops trusted, so right-to-left reaches hop 1 —
+        reported as a hash, never as the address."""
+        trust_proxy("100.64.0.0/10")
+        chain = ratelimit.describe_chain("100.64.0.7", "203.0.113.9, 100.64.0.3")
+
+        assert chain["peer_trusted"] is True
+        assert chain["hops"][1]["trusted"] is True
+        assert chain["resolved_identity"].startswith("public:sha256-")
+        assert "203.0.113.9" not in str(chain)
+
+    def test_a_slash32_on_the_peer_alone_stops_at_the_inner_hop(
+        self, trust_proxy
+    ) -> None:
+        """Why a single-address allow-list is not enough for a two-hop chain.
+
+        With only the peer trusted, the walk finds hop 2 untrusted and returns
+        it — an infrastructure address that every visitor shares, so the limit
+        stays collective while looking configured.
+        """
+        trust_proxy("100.64.0.7/32")
+        chain = ratelimit.describe_chain("100.64.0.7", "203.0.113.9, 100.64.0.3")
+
+        assert chain["peer_trusted"] is True
+        assert chain["hops"][1]["trusted"] is False
+        assert chain["resolved_identity"] == "cgnat:100.64.0.3"
+
+
+class TestTheDiagnosticIsEmittedOncePerProcess:
+    @pytest.fixture(autouse=True)
+    def _rearm(self):
+        ratelimit.reset_proxy_warning()
+        yield
+        ratelimit.reset_proxy_warning()
+
+    def test_it_logs_the_structured_chain(self, caplog) -> None:
+        with caplog.at_level("WARNING"):
+            client_identifier(make_request("100.64.0.7", "203.0.113.9, 100.64.0.3"))
+        assert "proxy.untrusted_chain" in caplog.text
+        assert "cgnat:100.64.0.7" in caplog.text
+        assert "203.0.113.9" not in caplog.text
+
+    def test_it_logs_once_across_many_requests(self, caplog) -> None:
+        with caplog.at_level("WARNING"):
+            for n in range(20):
+                client_identifier(make_request("100.64.0.7", f"203.0.113.{n}, 100.64.0.3"))
+        assert caplog.text.count("proxy.untrusted_chain") == 1

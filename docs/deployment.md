@@ -141,6 +141,69 @@ returns 401, because `web` signs a token `api` cannot verify.
 
 ---
 
+## Reference data
+
+The system category taxonomy (14 categories) and the merchant rules (428
+patterns) are **reference data the application cannot work without**, and they
+are installed by migration `d2f81b6c9a37`, not by a seed script.
+
+That distinction was learned the hard way. The rows previously existed only in
+`scripts/seed_synthetic.py`, which is **not in the runtime image** — the image
+copies `ledgerai/`, `alembic/` and the lock files and nothing else. A deployed
+database therefore never had a taxonomy, and the failure was almost invisible:
+`build_context()` falls back to the YAML when `merchant_rules` is empty, so the
+categorizer kept producing confident answers, but `resolve_category_ids()` had
+nothing to resolve them against and every transaction was written with a NULL
+category. Uploads reported "Categorizing ✓" and succeeded. Every category in the
+UI read *Uncategorized*.
+
+`ledgerai/services/categorize/*.yaml` remains the canonical source. The
+migration carries a frozen snapshot of it so the same rows are produced in every
+environment forever, and `tests/test_taxonomy_migration.py` asserts the snapshot
+still matches the YAML — editing the taxonomy fails CI until a new migration is
+written for the change.
+
+**Nothing to run by hand.** `alembic upgrade head` installs it, which the API's
+`preDeployCommand` already does. Re-running is safe: categories conflict on the
+partial unique index `uq_categories_system_slug`, merchant rules on the unique
+`pattern`.
+
+### Verifying it landed
+
+```
+/health/ready → "dependencies": { "reference_data": "ok" | "missing" }
+```
+
+A missing taxonomy is **reported but not disqualifying** — the instance still
+serves uploads, search, receipts and deletion perfectly well, and draining it
+would turn a degraded feature into an outage. It is also logged once per
+process at ERROR:
+
+```
+reference_data.missing table=categories system_rows=0
+```
+
+### Repairing rows imported before the fix
+
+Transactions written while the taxonomy was absent keep their NULL category;
+the migration does not rewrite them. One command, safe to run more than once:
+
+```bash
+railway run --service worker ledgerai-backfill-categories
+```
+
+It re-runs the **real categorizer** over rows where `is_corrected = FALSE` and
+the category is NULL or Uncategorized — never a row the user has corrected, and
+never one already carrying a real category. Unknown merchants are pointed at
+Uncategorized and flagged for review rather than guessed at. The second run
+finds nothing, because the first moves those rows out of the eligible set.
+
+Note the filter is on the category, not on `categorized_by`: the affected rows
+say `categorized_by="rule"` with `confidence=0.90`, because the engine *did*
+answer — it just had nowhere to put the answer.
+
+---
+
 ## Migrations
 
 Migrations run in **exactly one place** and never on service boot. If every

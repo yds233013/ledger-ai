@@ -73,12 +73,25 @@ def retention_sweep_main() -> int:
     return _run("retention-sweep", run_retention_sweep)
 
 
+def backfill_categories_main() -> int:
+    """Re-categorize rows left uncategorized while the taxonomy was missing.
+
+    One-off repair, not a scheduled sweep: once the taxonomy exists, imports
+    categorize correctly on their own. Safe to run more than once — the second
+    run finds nothing eligible.
+    """
+    from .jobs.backfill import run_category_backfill
+
+    return _run("backfill-categories", run_category_backfill)
+
+
 # The single source of truth for what an operator may schedule. The deployment
 # configuration tests read this, so a command that is documented but not
 # defined here fails the test suite rather than a cron run at 04:00.
 COMMANDS: dict[str, Callable[[], int]] = {
     "demo-cleanup": demo_cleanup_main,
     "retention-sweep": retention_sweep_main,
+    "backfill-categories": backfill_categories_main,
 }
 
 
