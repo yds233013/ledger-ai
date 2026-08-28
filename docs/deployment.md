@@ -19,11 +19,28 @@ Seven services, of which five are ours:
 |---|---|---|---|
 | `web` | `apps/web` | `railway/web.json` | Next.js. The only service the public reaches for pages. |
 | `api` | `apps/api` | `railway/api.json` | FastAPI. Reached by the browser for data, and by `web` for auth. |
-| `worker` | `apps/api` | `railway/worker.json` | RQ consumer: CSV parsing, OCR, categorization, alert detection. |
-| `cron-demo-cleanup` | `apps/api` | `railway/cron-demo-cleanup.json` | Hourly. Deletes expired demo accounts. |
-| `cron-retention` | `apps/api` | `railway/cron-retention.json` | Daily. Stuck jobs, failed-upload files, stale receipts. |
+| `worker` | `apps/api` | `railway/worker.json` | RQ consumer — CSV parsing, OCR, categorization, alert detection — **and** the maintenance schedule. |
 | `postgres` | — | Railway managed | Every durable record. |
-| `redis` | — | Railway managed | RQ broker, analysis cache, rate-limit counters. |
+| `redis` | — | Railway managed | RQ broker, analysis cache, rate-limit counters, maintenance locks. |
+
+### Why five, and why maintenance lives in the worker
+
+Railway's Hobby plan caps a project at **five services**
+(`subscriptionPlanLimit.project.services`). Postgres, Redis, `api`, `worker`
+and `web` fill it exactly, which leaves no slot for the two cron services the
+sweeps originally had.
+
+The alternatives were to pay for a larger plan, to drop the sweeps, or to move
+them. Dropping them is not viable: every visitor to the demo provisions an
+account with roughly 250 transactions, and without the hourly cleanup those
+accumulate for as long as the site is up. So the schedule moved into the
+worker, which was already a long-running process holding a Redis connection.
+
+**The sweep logic did not change.** `ledgerai.jobs.demo_cleanup` and
+`ledgerai.jobs.retention` are the same modules the cron services invoked, still
+individually runnable as `ledgerai-demo-cleanup` and `ledgerai-retention-sweep`
+for a manual sweep. What changed is only *who decides when* — see
+[Maintenance scheduling](#maintenance-scheduling).
 
 **There is no `railway.json` at the repository root, and there must not be.**
 Railway applies a root config to every service that has not been told
@@ -150,10 +167,8 @@ Each lives in that service's config file rather than in dashboard state.
 | Service | Command |
 |---|---|
 | `api` | `sh -c 'exec uvicorn ledgerai.main:app --host 0.0.0.0 --port "${PORT:-8000}" --no-access-log'` |
-| `worker` | `rq worker ledgerai --url "$REDIS_URL"` |
+| `worker` | `ledgerai-worker` (RQ consumer + maintenance schedule) |
 | `web` | `node server.js` (Next.js standalone output) |
-| `cron-demo-cleanup` | `ledgerai-demo-cleanup` |
-| `cron-retention` | `ledgerai-retention-sweep` |
 
 **The API command is wrapped in `sh -c`, and that is load-bearing.** Railway
 execs the start command directly rather than handing it to a shell, so a bare
@@ -356,32 +371,53 @@ hands an attacker a fresh login budget per forged header. Forwarded addresses
 are resolved in the application instead, where the allow-list is enforced and
 unit-tested (`tests/test_ratelimit_security.py`).
 
-## Scheduled jobs
+## Maintenance scheduling
 
-Two sweeps, both idempotent and both safe to run against live traffic. Each is
-a Railway service with a `cronSchedule`: the container starts on the schedule,
-runs its command, and exits.
+Two sweeps, both idempotent and both safe to run against live traffic. Both run
+**inside the worker process**, on a daemon thread that evaluates the schedule
+once a minute.
 
-| Job | Command | Schedule | Config |
-|---|---|---|---|
-| Expired demo cleanup | `ledgerai-demo-cleanup` | `0 * * * *` (hourly) | `railway/cron-demo-cleanup.json` |
-| Retention sweep | `ledgerai-retention-sweep` | `0 4 * * *` (daily) | `railway/cron-retention.json` |
+| Job | Cadence | Entry point |
+|---|---|---|
+| Expired demo cleanup | hourly | `ledgerai.jobs.demo_cleanup.run_demo_cleanup` |
+| Retention sweep | daily | `ledgerai.jobs.retention.run_retention_sweep` |
 
-**These are console scripts installed by the package**, so they resolve on
-PATH inside the image. They are not `python scripts/...`: the image is built
-from the `apps/api` context and copies only `ledgerai/`, `alembic/` and the
-lock files, so the repository-root `scripts/` directory **does not exist in a
-deployed container**. Invoking it there fails with "No such file or directory",
-and it fails silently as far as the product is concerned — nothing surfaces the
-fact that demo accounts have stopped being reaped until the database has been
-growing for weeks. `tests/test_cli.py` and `tests/test_railway_config.py` pin
-the entry points and the scheduled commands to each other.
+`ledgerai/maintenance/schedule.py` holds the decision logic and
+`supervisor.py` the thread. Three properties make it safe to run a schedule
+inside a process that also consumes a queue:
 
-`python -m ledgerai.cli demo-cleanup` is the equivalent for a one-off run from
-a shell in the container. Both exit non-zero on failure, so a failed sweep is
-recorded as a failed run rather than printing a traceback and reporting
-success. `restartPolicyType` is `NEVER` so a failure waits for the next tick
-instead of restart-looping.
+**Only one runner.** Every worker replica evaluates the same schedule, so the
+decision is arbitrated through a Redis lock taken with `SET NX PX` and released
+by a compare-and-delete Lua script — a plain `DEL` would let a worker whose lock
+had already expired delete a lock another worker has since taken. The due-check
+is then *repeated under the lock*, because two workers can both find a sweep due
+before either acquires anything.
+
+**State outside the process.** The last-run timestamp lives in Redis
+(`ledgerai:maintenance:<job>:last_run`), not in memory. A restart or a redeploy
+therefore neither re-runs a sweep that just ran nor waits a full interval before
+the next one. Scheduling is a function of the clock and one Redis key, never of
+how long a particular process has been up — which matters because a redeploy
+restarts every replica at once.
+
+**Failure is contained.** A sweep that raises is logged and its lock released;
+nothing propagates to the worker, which keeps consuming uploads. The last-run
+marker is deliberately **not** written on failure, so the next tick retries
+rather than waiting out a whole interval — for retention, that would be a day.
+
+Logs carry the job name, timestamps, durations and integer counts only. Report
+fields that are not integers are dropped before logging, so the line cannot
+start carrying user data as the reports evolve; the `errors` list is reduced to
+its length.
+
+To force a sweep by hand:
+
+```bash
+railway run --service worker ledgerai-demo-cleanup
+railway run --service worker ledgerai-retention-sweep
+```
+
+Locally: `make demo-sweep` and `make sweep`. All paths call the same functions.
 
 **Demo cleanup** deletes ephemeral demo accounts past their 24-hour deadline
 and everything they own: database rows (one `DELETE` — every `users.id` foreign
@@ -394,10 +430,6 @@ reached. Running it twice removes nothing the second time.
 **Retention** fails jobs abandoned mid-pipeline (a worker killed outright never
 runs its own failure handler), removes stored files for uploads that failed
 more than 7 days ago, and deletes receipts never confirmed within 30 days.
-
-Locally: `make demo-sweep` and `make sweep`. Those wrappers call the same
-functions the console scripts do, so the local path cannot drift from the
-deployed one.
 
 ## Rollback
 

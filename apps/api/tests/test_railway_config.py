@@ -96,35 +96,36 @@ class TestServicesCannotStartAsEachOther:
         """
         assert "exec uvicorn" in load("api")["deploy"]["startCommand"]
 
-    def test_the_worker_consumes_the_queue_and_is_not_a_second_api(self) -> None:
+    def test_the_worker_runs_the_combined_entry_point(self) -> None:
+        """`ledgerai-worker` is the RQ consumer plus the maintenance scheduler.
+
+        It replaced a bare `rq worker`, which consumed the queue perfectly well
+        but could not run the periodic sweeps. Those lost their own Railway
+        services to the five-service Hobby cap, so the schedule moved into this
+        process — see ledgerai/worker.py.
+        """
         command = load("worker")["deploy"]["startCommand"]
-        assert "rq worker ledgerai" in command
+        assert command == "ledgerai-worker"
         assert "uvicorn" not in command
 
-    def test_the_worker_redis_url_is_expanded_by_a_shell(self) -> None:
-        """The same defect the API's `--port $PORT` had, one variable along.
+    def test_the_worker_command_needs_no_shell_expansion(self) -> None:
+        """Why this one is not wrapped in `sh -c`, unlike the API's.
 
-        Railway execs the start command rather than handing it to a shell, so
-        an unwrapped `--url "$REDIS_URL"` reaches rq as that literal text and
-        it dies on:
-
-            ValueError: Redis URL must specify one of the following schemes
-            (redis://, rediss://, unix://)
-
-        `sh -c` is what expands it. The Dockerfile's worker CMD already did
-        this; the Railway config overrides CMD, so it has to as well.
+        Railway execs the start command directly, so anything containing a
+        variable has to be wrapped. This command takes no arguments and names no
+        variable — the queue and Redis URL are read from the environment inside
+        the process — so there is nothing to expand.
         """
         command = load("worker")["deploy"]["startCommand"]
-        assert command.startswith("sh -c ")
-        assert "$REDIS_URL" in command
+        assert "$" not in command
+        assert "sh -c" not in command
 
-    def test_the_worker_stays_pid_1_so_rq_can_drain(self) -> None:
-        """`exec` replaces the shell, so rq receives SIGTERM itself and runs
-        its warm shutdown — finishing the job in flight rather than abandoning
-        a half-processed receipt. That is what `drainingSeconds` buys, and it
-        buys nothing if a shell swallows the signal.
-        """
-        assert "exec rq worker" in load("worker")["deploy"]["startCommand"]
+    def test_the_worker_entry_point_is_an_installed_console_script(self) -> None:
+        """A start command that is not on PATH is a crash loop."""
+        pyproject = tomllib.loads((API_ROOT / "pyproject.toml").read_text())
+        command = load("worker")["deploy"]["startCommand"]
+        assert command in pyproject["project"]["scripts"]
+        assert pyproject["project"]["scripts"][command] == "ledgerai.worker:main"
 
     def test_the_web_service_runs_the_next_server(self) -> None:
         command = load("web")["deploy"]["startCommand"]

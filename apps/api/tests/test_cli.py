@@ -35,10 +35,13 @@ class TestConsoleScriptsAreDefined:
     """`[project.scripts]` is what puts these commands on PATH in the image."""
 
     def test_both_sweeps_are_declared(self) -> None:
-        assert set(_console_scripts()) == {
-            "ledgerai-demo-cleanup",
-            "ledgerai-retention-sweep",
-        }
+        """The sweeps stay individually invocable even though the worker now
+        schedules them, because `railway run ledgerai-demo-cleanup` is how an
+        operator forces one by hand."""
+        assert {"ledgerai-demo-cleanup", "ledgerai-retention-sweep"} <= set(_console_scripts())
+
+    def test_the_worker_entry_point_is_declared(self) -> None:
+        assert _console_scripts()["ledgerai-worker"] == "ledgerai.worker:main"
 
     @pytest.mark.parametrize(
         ("script", "target"),

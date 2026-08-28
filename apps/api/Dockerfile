@@ -98,9 +98,15 @@ FROM runtime AS worker
 HEALTHCHECK --interval=60s --timeout=10s --start-period=20s --retries=3 \
   CMD python -c "import os,redis,sys; redis.Redis.from_url(os.environ['REDIS_URL']).ping()" || exit 1
 
-# SIGTERM triggers RQ's warm shutdown: the job in flight finishes before the
-# process exits, so a deploy never abandons a half-parsed receipt.
-CMD ["sh", "-c", "exec rq worker ${RQ_QUEUE} --url \"${REDIS_URL}\""]
+# Runs the RQ consumer AND the maintenance scheduler in one process. `rq worker`
+# alone still consumes the queue perfectly well, but it cannot run the periodic
+# sweeps, which lost their own services to Railway's five-service Hobby cap —
+# see ledgerai/worker.py and docs/architecture.md.
+#
+# SIGTERM still triggers RQ's warm shutdown, because RQ owns the main thread and
+# installs its own handlers: the job in flight finishes before the process
+# exits, so a deploy never abandons a half-parsed receipt.
+CMD ["ledgerai-worker"]
 
 
 # ---------- api ----------

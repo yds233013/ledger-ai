@@ -36,6 +36,43 @@ Next.js: Ask Ledger streams over SSE, and an extra hop buys nothing but
 buffering risk. Next.js is only in the path for the session and for minting
 tokens.
 
+
+## Where periodic maintenance runs
+
+Two sweeps keep the system from accumulating junk: expired demo accounts hourly,
+and stale uploads/receipts daily. Both run **on a daemon thread inside the
+worker**, not in their own services and never in the API.
+
+That is a deployment constraint made explicit in code. Railway's Hobby plan caps
+a project at five services; Postgres, Redis, `api`, `worker` and `web` use all
+five. Giving the sweeps their own services would mean a paid plan, and dropping
+them would mean every demo visitor's ~250 synthetic transactions accumulating
+for the life of the deployment.
+
+```
+worker process
+├─ main thread    rq Worker.work()      ← uploads, OCR, categorization, alerts
+└─ daemon thread  MaintenanceScheduler  ← evaluates the schedule every 60s
+                      │
+                      ├─ SET NX PX lock in Redis      (one runner, cluster-wide)
+                      ├─ re-check due under the lock  (no duplicate on contention)
+                      ├─ run sweep                    (same jobs/ code as before)
+                      └─ write last_run to Redis      (survives restarts)
+```
+
+**The API never schedules anything.** A request-handling process with periodic
+side effects would run them once per replica and once per restart; the whole
+point of the Redis lock is that the decision is made in one place regardless of
+how many processes are asking.
+
+**A failed sweep cannot stop upload processing.** The scheduler catches
+everything, releases its lock, and declines to write the last-run marker so the
+next tick retries. The worker's main thread never sees it.
+
+The sweep implementations are untouched in `ledgerai/jobs/` and remain
+individually invocable (`ledgerai-demo-cleanup`, `ledgerai-retention-sweep`) for
+a manual run. Only the scheduling moved.
+
 ## Request paths
 
 ```

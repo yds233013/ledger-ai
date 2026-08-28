@@ -36,6 +36,7 @@ dependencies = [
 # image. These are the commands a scheduler runs; the repo-root scripts/
 # directory does not exist in a deployed container.
 [project.scripts]
+ledgerai-worker = "ledgerai.worker:main"
 ledgerai-demo-cleanup = "ledgerai.cli:demo_cleanup_main"
 ledgerai-retention-sweep = "ledgerai.cli:retention_sweep_main"
 

@@ -15,8 +15,14 @@ about itself.
 | `api` | `apps/api` | `/railway/api.json` |
 | `worker` | `apps/api` | `/railway/worker.json` |
 | `web` | `apps/web` | `/railway/web.json` |
-| `cron-demo-cleanup` | `apps/api` | `/railway/cron-demo-cleanup.json` |
-| `cron-retention` | `apps/api` | `/railway/cron-retention.json` |
+
+**Five services, not seven.** Railway's Hobby plan caps a project at five, and
+Postgres, Redis, `api`, `worker` and `web` fill it exactly. The two cron
+services this directory once described have been folded into the worker, which
+runs both sweeps on a Redis-locked schedule — see `ledgerai/maintenance/` and
+docs/deployment.md, "Maintenance scheduling". `cron-demo-cleanup.json` and
+`cron-retention.json` remain here as the deploy-them-separately configuration
+for anyone on a plan with room; nothing deploys them today.
 
 **Root Directory is the Docker build context**, which is why it is not
 optional. `apps/web/Dockerfile` begins `COPY package.json package-lock.json ./`
