@@ -316,3 +316,16 @@ class TestTheMissingTaxonomyIsVisible:
         body = (await client.get("/health/ready")).json()
         assert "reference_data" in body["dependencies"]
         assert body["dependencies"]["reference_data"] in {"ok", "missing"}
+
+    async def test_a_missing_taxonomy_is_not_a_readiness_reason(self, client) -> None:
+        """`reasons` answers "why is this instance not ready".
+
+        Listing a non-blocking condition there would let a `ready` response
+        carry a reason for not being ready, which is a contradiction — and it
+        broke an existing assertion that a healthy instance reports no reasons
+        at all. The condition belongs in `dependencies`.
+        """
+        body = (await client.get("/health/ready")).json()
+        assert "reference_data_missing" not in body["reasons"]
+        if body["status"] == "ready":
+            assert body["reasons"] == []

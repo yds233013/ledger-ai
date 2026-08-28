@@ -270,9 +270,11 @@ async def readiness(response: Response) -> dict[str, object]:
         reasons.append("database_unavailable")
     if limiter_blocks_traffic:
         reasons.append("rate_limit_store_unavailable")
-    # Reported, but deliberately not disqualifying — see _probe_reference_data.
-    if database_ok and not reference_data_ok:
-        reasons.append("reference_data_missing")
+    # A missing taxonomy is deliberately NOT listed here. `reasons` answers
+    # "why is this instance not ready", so anything in it must be
+    # disqualifying; a non-blocking condition would make a `ready` response
+    # contradict its own reasons. It is reported through `dependencies`
+    # instead, and logged once at ERROR. See _probe_reference_data.
 
     return {
         "status": "ready" if ready else "not_ready",
