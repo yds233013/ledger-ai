@@ -5,7 +5,7 @@
     "dockerfilePath": "Dockerfile"
   },
   "deploy": {
-    "startCommand": "uvicorn ledgerai.main:app --host 0.0.0.0 --port $PORT --no-access-log",
+    "startCommand": "sh -c 'exec uvicorn ledgerai.main:app --host 0.0.0.0 --port \"${PORT:-8000}\" --no-access-log'",
     "preDeployCommand": "alembic upgrade head",
     "healthcheckPath": "/health/ready",
     "healthcheckTimeout": 30,

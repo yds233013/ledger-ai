@@ -149,11 +149,18 @@ Each lives in that service's config file rather than in dashboard state.
 
 | Service | Command |
 |---|---|
-| `api` | `uvicorn ledgerai.main:app --host 0.0.0.0 --port $PORT --no-access-log` |
+| `api` | `sh -c 'exec uvicorn ledgerai.main:app --host 0.0.0.0 --port "${PORT:-8000}" --no-access-log'` |
 | `worker` | `rq worker ledgerai --url "$REDIS_URL"` |
 | `web` | `node server.js` (Next.js standalone output) |
 | `cron-demo-cleanup` | `ledgerai-demo-cleanup` |
 | `cron-retention` | `ledgerai-retention-sweep` |
+
+**The API command is wrapped in `sh -c`, and that is load-bearing.** Railway
+execs the start command directly rather than handing it to a shell, so a bare
+`--port $PORT` arrives at uvicorn as four literal characters and it exits with
+`Invalid value for '--port': '$PORT' is not a valid integer`. The `exec` keeps
+uvicorn as PID 1 so it receives SIGTERM itself and drains in-flight requests
+rather than being killed under a shell that ignored the signal.
 
 **The API is started without `--proxy-headers`.** That is deliberate and is a
 security property, not an oversight — see [Proxy trust](#proxy-trust).

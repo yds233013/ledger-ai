@@ -66,9 +66,35 @@ class TestServicesCannotStartAsEachOther:
     def test_the_api_serves_http(self) -> None:
         deploy = load("api")["deploy"]
         assert "uvicorn ledgerai.main:app" in deploy["startCommand"]
-        assert "$PORT" in deploy["startCommand"]
         # The access log records query strings, which carry merchant searches.
         assert "--no-access-log" in deploy["startCommand"]
+
+    def test_the_port_is_expanded_by_a_shell(self) -> None:
+        """The bug this pins, observed on the first Railway deploy:
+
+            Error: Invalid value for '--port': '$PORT' is not a valid integer.
+
+        Railway execs the start command directly rather than handing it to a
+        shell, so a bare `--port $PORT` reaches uvicorn as the four literal
+        characters and it refuses to start. Wrapping the command in `sh -c` is
+        what performs the expansion. The Dockerfile's own CMD already does
+        this; the Railway config overrides CMD, so it has to do it too.
+        """
+        command = load("api")["deploy"]["startCommand"]
+        assert command.startswith("sh -c ")
+        assert "${PORT" in command
+        # The exact form that failed. A default keeps the command runnable
+        # anywhere PORT is not injected.
+        assert "--port $PORT" not in command
+
+    def test_uvicorn_remains_pid_1(self) -> None:
+        """`exec` replaces the shell rather than forking under it.
+
+        Without it the shell is PID 1, receives SIGTERM on a rolling deploy and
+        exits without passing the signal on, so uvicorn is killed outright
+        instead of draining — which cuts an in-progress SSE stream.
+        """
+        assert "exec uvicorn" in load("api")["deploy"]["startCommand"]
 
     def test_the_worker_consumes_the_queue_and_is_not_a_second_api(self) -> None:
         command = load("worker")["deploy"]["startCommand"]
