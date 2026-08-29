@@ -10,14 +10,18 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
+from anyio import to_thread
 from fastapi import APIRouter, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 
 from ..config import settings as app_settings
-from ..deps import CurrentUser, DbSession
+from ..db import SyncSessionLocal
+from ..deps import CurrentUser, DbSession, SyncSessionFactory
 from ..models import Account, Transaction, Upload
 from ..security.ratelimit import DESTRUCTIVE_LIMIT, EXPORT_LIMIT, enforce
+from ..services import consent
+from ..services.account_deletion import record_deletion_intent
 from ..services.analysis.cache import purge_user_cache
 from ..services.demo import (
     DEMO_DATA_NOTICE,
@@ -214,6 +218,66 @@ def _require_confirmation(payload: DeletionRequest) -> None:
         )
 
 
+class ConsentStateOut(BaseModel):
+    required: dict[str, str]
+    accepted: dict[str, str]
+    missing: list[str]
+
+
+class ConsentAcceptIn(BaseModel):
+    consent_types: list[str]
+
+
+@router.get("/consents", response_model=ConsentStateOut)
+async def get_consents(user: CurrentUser, session: DbSession) -> ConsentStateOut:
+    """What this account has accepted, and what it still needs to."""
+    accepted = await consent.accepted_versions(session, user.id)
+    return ConsentStateOut(
+        required={t: consent.required_version(t) for t in consent.UPLOAD_PREREQUISITES},
+        accepted=accepted,
+        missing=await consent.missing_consents(session, user),
+    )
+
+
+@router.post("/consents", response_model=ConsentStateOut)
+async def accept_consents(
+    payload: ConsentAcceptIn,
+    request: Request,
+    user: CurrentUser,
+    factory: SyncSessionFactory,
+    session: DbSession,
+) -> ConsentStateOut:
+    """Record acceptance of one or more documents at their current version."""
+    unknown = set(payload.consent_types) - set(consent.REQUIRED_VERSIONS)
+    if unknown:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Unknown consent type(s): {', '.join(sorted(unknown))}",
+        )
+
+    request_id = request.headers.get("x-request-id", "")[:64]
+
+    def _record() -> None:
+        with factory() as sync_session:
+            for consent_type in payload.consent_types:
+                consent.record_consent(
+                    sync_session,
+                    user_id=user.id,
+                    consent_type=consent_type,
+                    request_id=request_id,
+                )
+            sync_session.commit()
+
+    await to_thread.run_sync(_record)
+
+    accepted = await consent.accepted_versions(session, user.id)
+    return ConsentStateOut(
+        required={t: consent.required_version(t) for t in consent.UPLOAD_PREREQUISITES},
+        accepted=accepted,
+        missing=await consent.missing_consents(session, user),
+    )
+
+
 @router.get("/export")
 async def export_data(
     request: Request, user: CurrentUser, session: DbSession
@@ -294,5 +358,25 @@ async def delete_data(
 async def delete_account(
     payload: DeletionRequest, request: Request, user: CurrentUser, session: DbSession
 ) -> DeletionResponse:
-    """Remove the account and everything belonging to it."""
+    """Remove the account and everything belonging to it.
+
+    For a Clerk-backed account the tombstone is written FIRST, before anything
+    is removed. That single row denies every subsequent request and stops lazy
+    provisioning from rebuilding the profile — a token minted a minute ago is
+    still cryptographically valid, and without the tombstone the user's next
+    request would recreate exactly what they just asked us to erase.
+
+    If the purge below fails halfway, the tombstone is what the reconciliation
+    sweep picks up, so the deletion finishes rather than silently stopping.
+    """
+    if user.clerk_user_id:
+        clerk_user_id = user.clerk_user_id
+
+        def _record() -> None:
+            with SyncSessionLocal() as sync_session:
+                record_deletion_intent(sync_session, clerk_user_id=clerk_user_id)
+                sync_session.commit()
+
+        await to_thread.run_sync(_record)
+
     return await _run_deletion(request, user, session, payload, delete_account=True)

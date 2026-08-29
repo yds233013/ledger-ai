@@ -60,6 +60,34 @@ class Settings(BaseSettings):
     s3_region: str = "us-east-1"
     local_storage_dir: str = ".localstorage"
 
+    # --- Clerk (managed authentication) -------------------------------------
+    # OFF by default. With this false the API rejects every RS256 token and the
+    # demo flow is the only way in, which is exactly the rollback position: one
+    # variable, no deploy.
+    clerk_enabled: bool = False
+    # Frontend API URL of the Clerk instance; also the `iss` claim value.
+    # e.g. https://<slug>.clerk.accounts.dev
+    clerk_issuer: str = ""
+    # Comma-separated origins permitted to have produced a token. Clerk's docs
+    # are explicit that skipping the azp check opens the app to CSRF, so this is
+    # required whenever clerk_enabled is on.
+    clerk_authorized_parties: str = ""
+    # Optional. Clerk session tokens carry no `aud` by default; if a custom
+    # template adds one, set this and it becomes mandatory.
+    clerk_audience: str = ""
+    clerk_webhook_signing_secret: str = ""
+    # Seconds of clock skew tolerated on exp/nbf.
+    clerk_leeway_seconds: int = 30
+
+    # --- Private beta --------------------------------------------------------
+    # Persistent accounts require a matching local invitation. Independent of
+    # Clerk's own invite-only mode, which is the primary gate.
+    beta_invite_only: bool = True
+    # Version strings recorded against each consent. Bumping one re-prompts.
+    terms_version: str = "2026-08-draft-1"
+    privacy_version: str = "2026-08-draft-1"
+    upload_consent_version: str = "2026-08-draft-1"
+
     # --- AI -----------------------------------------------------------------
     # Phase 1 ships the deterministic engine only. These exist so the Phase 2
     # LLM planner/categorizer/narrator can be switched on without refactoring.
@@ -136,6 +164,29 @@ class Settings(BaseSettings):
     def async_database_url(self) -> str:
         """Async URL for the FastAPI request path (psycopg3 async)."""
         return self.database_url
+
+    @property
+    def clerk_jwks_url(self) -> str:
+        """Derived, never configured separately.
+
+        A second variable could drift from the issuer, and a JWKS fetched from
+        somewhere other than the issuer is the whole attack.
+        """
+        return f"{self.clerk_issuer.rstrip('/')}/.well-known/jwks.json"
+
+    @property
+    def clerk_authorized_party_list(self) -> list[str]:
+        return [p.strip() for p in self.clerk_authorized_parties.split(",") if p.strip()]
+
+    @property
+    def clerk_configured(self) -> bool:
+        """Whether Clerk verification may run at all.
+
+        Enabled but unconfigured must not mean "accept anything": without an
+        issuer or an authorized party there is nothing to check a token
+        against, so this returns False and the RS256 path stays closed.
+        """
+        return bool(self.clerk_enabled and self.clerk_issuer and self.clerk_authorized_party_list)
 
     @property
     def is_production(self) -> bool:

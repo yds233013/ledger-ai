@@ -85,6 +85,94 @@ def backfill_categories_main() -> int:
     return _run("backfill-categories", run_category_backfill)
 
 
+def invite_main() -> int:
+    """Administrative invitation management for the private beta.
+
+        ledgerai-invite create <email> [--days N] [--note "..."]
+        ledgerai-invite revoke <email>
+        ledgerai-invite list
+
+    The address is never stored — only a keyed HMAC of it and a lossy hint —
+    so `list` shows hints rather than addresses. That is the point: the table
+    must not be a directory of who was invited.
+    """
+    import argparse
+
+    from .db import sync_session
+    from .services.identity import (
+        DEFAULT_INVITE_TTL_DAYS,
+        create_invitation,
+        revoke_invitation,
+    )
+
+    logging.basicConfig(level="INFO", format="%(levelname)-5s %(message)s")
+    install_redaction()
+
+    parser = argparse.ArgumentParser(prog="ledgerai-invite")
+    sub = parser.add_subparsers(dest="command", required=True)
+    create = sub.add_parser("create")
+    create.add_argument("email")
+    create.add_argument("--days", type=int, default=DEFAULT_INVITE_TTL_DAYS)
+    create.add_argument("--note", default="")
+    revoke = sub.add_parser("revoke")
+    revoke.add_argument("email")
+    sub.add_parser("list")
+
+    args = parser.parse_args(sys.argv[1:])
+
+    from sqlalchemy import select
+
+    from .models import Invitation
+
+    with sync_session() as session:
+        if args.command == "create":
+            invitation = create_invitation(
+                session, args.email, ttl_days=args.days, note=args.note
+            )
+            session.commit()
+            print(
+                json.dumps(
+                    {
+                        "created": True,
+                        "hint": invitation.email_hint,
+                        "expires_at": str(invitation.expires_at),
+                    },
+                    indent=_JSON_INDENT,
+                )
+            )
+            print(
+                "\nNow send the Clerk invitation to the same address. "
+                "The user enters no code — provisioning matches on the email "
+                "Clerk verifies.",
+                file=sys.stderr,
+            )
+            return 0
+
+        if args.command == "revoke":
+            ok = revoke_invitation(session, args.email)
+            session.commit()
+            print(json.dumps({"revoked": ok}, indent=_JSON_INDENT))
+            return 0 if ok else 1
+
+        rows = session.execute(select(Invitation).order_by(Invitation.created_at)).scalars()
+        print(
+            json.dumps(
+                [
+                    {
+                        "hint": r.email_hint,
+                        "expires_at": str(r.expires_at),
+                        "redeemed": r.redeemed_at is not None,
+                        "revoked": r.revoked_at is not None,
+                        "note": r.note,
+                    }
+                    for r in rows
+                ],
+                indent=_JSON_INDENT,
+            )
+        )
+        return 0
+
+
 # The single source of truth for what an operator may schedule. The deployment
 # configuration tests read this, so a command that is documented but not
 # defined here fails the test suite rather than a cron run at 04:00.

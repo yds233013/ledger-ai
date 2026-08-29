@@ -6,6 +6,7 @@ sure exactly one worker runs each one.
 """
 
 from .schedule import (
+    ACCOUNT_RECONCILE,
     DEMO_CLEANUP,
     RETENTION,
     ScheduledSweep,
@@ -17,6 +18,7 @@ from .schedule import (
 from .supervisor import MaintenanceScheduler
 
 __all__ = [
+    "ACCOUNT_RECONCILE",
     "DEMO_CLEANUP",
     "RETENTION",
     "MaintenanceScheduler",

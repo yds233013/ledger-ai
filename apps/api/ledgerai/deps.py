@@ -10,8 +10,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session, sessionmaker
 
+from .config import settings
 from .db import SyncSessionLocal, get_db
 from .models import User
+from .security.clerk import ClerkTokenError, looks_like_clerk_token, verify_clerk_token
 from .security.jwt import TokenError, decode_access_token
 from .services.demo import demo_has_expired
 
@@ -35,20 +37,15 @@ DEMO_EXPIRED_ERROR = HTTPException(
 )
 
 
-async def get_current_user(
-    authorization: Annotated[str | None, Header()] = None,
-    session: AsyncSession = Depends(get_db),
-) -> User:
-    """Resolve the bearer token to a real user row.
+ACCOUNT_DELETED_ERROR = HTTPException(
+    status_code=status.HTTP_401_UNAUTHORIZED,
+    detail="This account has been deleted.",
+    headers={"WWW-Authenticate": "Bearer"},
+)
 
-    Every user-scoped route depends on this. The returned User.id is the only
-    identity the rest of the request may use — no route reads a user id from
-    the path, query string or body.
-    """
-    if not authorization or not authorization.lower().startswith("bearer "):
-        raise CREDENTIALS_ERROR
 
-    token = authorization.split(" ", 1)[1].strip()
+async def _user_from_demo_token(token: str, session: AsyncSession) -> User:
+    """The existing HS256 path, unchanged in behaviour."""
     try:
         claims = decode_access_token(token)
     except TokenError as exc:
@@ -66,15 +63,62 @@ async def get_current_user(
     user = (await session.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
     if user is None:
         raise CREDENTIALS_ERROR
+    return user
 
-    # Demo expiry is enforced HERE, against the row, on every single request.
-    #
-    # Putting it in the token instead would not hold: the browser session mints
-    # a fresh short-lived token whenever the old one nears expiry, so a visitor
-    # who simply keeps the tab open would renew their way past the deadline
-    # forever. The column cannot be renewed by refreshing.
-    if demo_has_expired(user):
-        raise DEMO_EXPIRED_ERROR
+
+async def _user_from_clerk_token(
+    token: str,
+    session: AsyncSession,
+    factory: sessionmaker[Session],
+) -> User:
+    """Verify a Clerk token, then find or create the profile it belongs to.
+
+    Provisioning is lazy — the verified token is the source of truth — and runs
+    in a sync session because it needs `ON CONFLICT ... RETURNING` semantics and
+    a transaction boundary it controls.
+    """
+    if not settings.clerk_enabled:
+        # The kill switch. With Clerk off, an RS256 token is simply not a
+        # credential here, and the demo flow is unaffected.
+        raise CREDENTIALS_ERROR
+
+    try:
+        identity = verify_clerk_token(token)
+    except ClerkTokenError as exc:
+        # One generic message: which claim failed is a hint about what to try
+        # next, and the remedy is the same in every case.
+        raise CREDENTIALS_ERROR from exc
+
+    from anyio import to_thread
+
+    from .services.identity import ProvisioningError, provision_profile
+
+    def _provision() -> uuid.UUID:
+        # The injected factory, not the module-level one. A code path that can
+        # only ever reach the database DATABASE_URL names is a path that cannot
+        # be tested against another — the same coupling that hid two earlier
+        # bugs in this repository.
+        with factory() as sync_session:
+            user = provision_profile(
+                sync_session,
+                clerk_user_id=identity.subject,
+                email=identity.email,
+            )
+            user_id = user.id
+            sync_session.commit()
+            return user_id
+
+    try:
+        user_id = await to_thread.run_sync(_provision)
+    except ProvisioningError as exc:
+        # Deliberately 403, not 401: the caller IS authenticated, they are just
+        # not allowed an account. A 401 would send the browser back to sign in,
+        # which would succeed and loop.
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+
+    user = (await session.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
+    if user is None:
+        raise CREDENTIALS_ERROR
     return user
 
 
@@ -86,6 +130,47 @@ def get_sync_sessionmaker() -> sessionmaker[Session]:
     alert detectors on a worker thread and needs a real sync session there.
     """
     return SyncSessionLocal
+
+
+async def get_current_user(
+    authorization: Annotated[str | None, Header()] = None,
+    session: AsyncSession = Depends(get_db),
+    factory: sessionmaker[Session] = Depends(get_sync_sessionmaker),
+) -> User:
+    """Resolve the bearer token to a real user row.
+
+    Every user-scoped route depends on this. The returned User.id is the only
+    identity the rest of the request may use — no route reads a user id from
+    the path, query string or body.
+    """
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise CREDENTIALS_ERROR
+
+    token = authorization.split(" ", 1)[1].strip()
+
+    # Two token families, dispatched on the UNVERIFIED header. That is safe
+    # because the header only selects a verifier — it is never read as a claim
+    # about who the caller is — and each verifier pins its algorithm to exactly
+    # one value. There is no fallback between them: a token that fails the path
+    # it was routed to is rejected, never retried against the other.
+    if looks_like_clerk_token(token):
+        user = await _user_from_clerk_token(token, session, factory)
+    else:
+        user = await _user_from_demo_token(token, session)
+
+    if user.status == "pending_deletion":
+        # The rows may still be there; the answer is already no.
+        raise ACCOUNT_DELETED_ERROR
+
+    # Demo expiry is enforced HERE, against the row, on every single request.
+    #
+    # Putting it in the token instead would not hold: the browser session mints
+    # a fresh short-lived token whenever the old one nears expiry, so a visitor
+    # who simply keeps the tab open would renew their way past the deadline
+    # forever. The column cannot be renewed by refreshing.
+    if demo_has_expired(user):
+        raise DEMO_EXPIRED_ERROR
+    return user
 
 
 CurrentUser = Annotated[User, Depends(get_current_user)]

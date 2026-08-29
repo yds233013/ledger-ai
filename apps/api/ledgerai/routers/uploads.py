@@ -28,6 +28,7 @@ from ..security.validators import (
     validate_csv_structure,
     validate_size,
 )
+from ..services.consent import missing_consents
 from ..services.normalize import compute_content_hash
 from ..services.scoping import user_jobs, user_uploads
 from ..services.storage import StorageError, get_storage
@@ -86,6 +87,21 @@ async def create_upload(
     # Uploads are the widest attack surface here: they consume storage, worker
     # time and OCR cycles. Budgeted per user, not per IP.
     await enforce(request, UPLOAD_LIMIT, key=str(user.id))
+
+    # Upload is the moment new financial data enters the system, so it is the
+    # one action gated on consent. Reading, exporting and deleting your own
+    # data never are — withholding somebody's records until they accept a new
+    # document would be leverage, not consent. Demo accounts are exempt: the
+    # data is synthetic and the account deletes itself within a day.
+    outstanding = await missing_consents(session, user)
+    if outstanding:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "Please review and accept the current terms before uploading: "
+                + ", ".join(outstanding)
+            ),
+        )
     try:
         data = await _read_bounded(file)
         validate_size(len(data))

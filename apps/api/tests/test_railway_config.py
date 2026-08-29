@@ -179,7 +179,11 @@ class TestMaintenanceHasNoServiceOfItsOwn:
 
         from ledgerai.maintenance import default_sweeps
 
-        assert {s.name for s in default_sweeps()} == {"demo-cleanup", "retention"}
+        assert {s.name for s in default_sweeps()} == {
+            "demo-cleanup",
+            "retention",
+            "account-reconcile",
+        }
 
     def test_the_sweeps_stay_invocable_by_hand(self) -> None:
         """`railway run --service worker ledgerai-demo-cleanup` must still work."""

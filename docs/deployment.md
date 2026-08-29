@@ -141,6 +141,97 @@ returns 401, because `web` signs a token `api` cannot verify.
 
 ---
 
+## Private beta: Clerk, invitations and consent
+
+Persistent accounts are **off by default**. `CLERK_ENABLED=false` is the shipped
+setting and the rollback position: with it false the API rejects every RS256
+token, and the 24-hour demo flow — which uses a different token family
+entirely — is untouched.
+
+### Variables
+
+| Service | Variable | Secret | Notes |
+|---|---|---|---|
+| `api` | `CLERK_ENABLED` | no | `false` until deliberately turned on |
+| `api` | `CLERK_ISSUER` | no | Clerk Frontend API URL; also the `iss` claim |
+| `api` | `CLERK_AUTHORIZED_PARTIES` | no | The exact web origin. Required — see below |
+| `api` | `CLERK_AUDIENCE` | no | Optional; only if a custom JWT template adds `aud` |
+| `api` | `CLERK_WEBHOOK_SIGNING_SECRET` | **yes** | Set in the dashboard, never in source |
+| `api` | `BETA_INVITE_ONLY` | no | `true` |
+| `web` | `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` | no | Public by design |
+| `web` | `CLERK_SECRET_KEY` | **yes** | |
+
+`CLERK_JWKS_URL` is **derived** from the issuer, never configured separately —
+two variables could drift, and a JWKS fetched from anywhere other than the
+issuer is the whole attack.
+
+`clerk_configured` requires both an issuer and an authorized party. Enabled but
+unconfigured resolves to *closed*, not to accept-anything.
+
+### Token verification
+
+Two families, dispatched on the unverified header and never interchangeable:
+
+| Path | Algorithm | Key | Checks |
+|---|---|---|---|
+| Demo | `HS256` only | `AUTH_SECRET` | unchanged |
+| Clerk | `RS256` only | JWKS by `kid` | `iss`, `azp`, `exp`, `nbf`, `sub`, `aud` when configured |
+
+`azp` is mandatory. Clerk's documentation states that skipping it "can open your
+application to CSRF attacks", so a token without it is refused rather than
+allowed through. An unreachable JWKS produces **401, not 500** — a verifier that
+cannot verify has not authenticated anybody, and failing open on a network blip
+would be the entire vulnerability.
+
+### Invitations
+
+Two gates. Clerk's Restricted mode is the primary one: without an invitation
+there is no Clerk account and therefore no token. The local `invitations` table
+is the second — an audit trail, revocation after a Clerk invite has been sent,
+and a kill-switch independent of dashboard state.
+
+**The user never types a code.** You create a local invitation for an address
+and send the Clerk invitation to the same address; provisioning matches on the
+email Clerk verified.
+
+```bash
+railway run --service worker ledgerai-invite create beta@example.com --days 30
+railway run --service worker ledgerai-invite revoke beta@example.com
+railway run --service worker ledgerai-invite list
+```
+
+The address is stored as a **keyed HMAC**, never plaintext and never a bare
+hash: an email is trivially enumerable, so an unkeyed digest would let anyone
+reading the table confirm whether a specific person was invited. Rotating
+`AUTH_SECRET` invalidates unredeemed invitations — reissue them.
+
+### Account deletion
+
+Deletion spans Postgres, Redis, the queue, R2 and Clerk, and no transaction
+covers all five. A **tombstone** in `deleted_identities` is written first; that
+row denies access immediately and stops lazy provisioning from rebuilding the
+profile, which matters because a token minted before deletion stays valid until
+it expires.
+
+`pending → storage_purged → complete`. If our cleanup fails the tombstone stays
+`pending` and is retried; if the Clerk revocation fails it sits at
+`storage_purged`, still denying. The `account-reconcile` sweep on the worker
+runs every five minutes and finishes whatever is unfinished, so a webhook that
+Clerk never delivered costs time rather than correctness.
+
+The tombstone holds an opaque provider id, timestamps, a state and a retry
+count. No email, no name, nothing financial; `last_error` records an exception
+class name, never a message.
+
+### Consent
+
+`user_consents` records which document version was accepted and when. Upload is
+gated on it; reading, exporting and deleting your own data never are. Demo
+accounts are exempt. Drafts live in `docs/legal/` and are marked as **requiring
+legal review** — they make no compliance claim.
+
+---
+
 ## Reference data
 
 The system category taxonomy (14 categories) and the merchant rules (428

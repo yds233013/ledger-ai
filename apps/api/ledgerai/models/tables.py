@@ -60,7 +60,8 @@ class User(Base, TimestampMixin):
 
     id: Mapped[uuid.UUID] = uuid_pk()
     email: Mapped[str] = mapped_column(String(320), unique=True, nullable=False, index=True)
-    password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    # Nullable since Clerk-backed accounts have no password of ours to store.
+    password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
     display_name: Mapped[str] = mapped_column(String(120), nullable=False)
     # True for any account holding synthetic demo data — including the seeded
     # local development account, which is permanent.
@@ -85,9 +86,29 @@ class User(Base, TimestampMixin):
     # email address is not proof of ownership even when the provider says it
     # verified it, so it is never used to find an existing account.
     github_id: Mapped[str | None] = mapped_column(String(64), nullable=True, unique=True)
+    # The Clerk `sub` claim. THE permanent identity key for a persistent
+    # account — never the email address, which Clerk lets a user change.
+    # NULL for demo users, so the uniqueness guarantee is a partial index.
+    clerk_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    status: Mapped[str] = mapped_column(String(24), default="active", nullable=False)
+    created_via: Mapped[str] = mapped_column(String(24), default="demo", nullable=False)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # Ledger AI does not convert between currencies. Aggregates are restricted
     # to this currency and anything else is disclosed, never silently summed.
     base_currency: Mapped[str] = mapped_column(String(3), default="USD", nullable=False)
+
+    __table_args__ = (
+        # Postgres treats NULLs as distinct, so a plain UNIQUE would not stop a
+        # second row for the same Clerk subject — and every demo user has NULL
+        # here. The partial index constrains only real Clerk identities, and it
+        # is what makes ON CONFLICT provisioning race-safe.
+        Index(
+            "uq_users_clerk_user_id",
+            "clerk_user_id",
+            unique=True,
+            postgresql_where=text("clerk_user_id IS NOT NULL"),
+        ),
+    )
 
     accounts: Mapped[list[Account]] = relationship(
         back_populates="user", cascade="all, delete-orphan"
@@ -145,6 +166,100 @@ class Category(Base, TimestampMixin):
             unique=True,
             postgresql_where=text("user_id IS NULL"),
         ),
+    )
+
+
+class Invitation(Base, TimestampMixin):
+    """A local, email-bound invitation. The second gate behind Clerk's own.
+
+    Clerk's Restricted mode is the real barrier — without an invitation there is
+    no Clerk account and therefore no token. This table exists so the beta also
+    has an audit trail, revocation after a Clerk invite has been sent, and a
+    kill-switch that does not depend on dashboard state.
+
+    **The address is stored as a keyed HMAC, never in plaintext.** It has to be
+    matchable, because provisioning looks up the invitation by the email Clerk
+    verified — the user is never asked to type a code. A plain SHA-256 of an
+    email is trivially enumerable (the input space is small and guessable), so
+    the digest is keyed: without the key, the column cannot be searched for a
+    known address. `email_hint` is a deliberately lossy display string so an
+    administrator can tell invitations apart.
+    """
+
+    __tablename__ = "invitations"
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    email_hmac: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    email_hint: Mapped[str] = mapped_column(String(120), nullable=False, default="")
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    redeemed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    redeemed_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    note: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+
+
+class UserConsent(Base, TimestampMixin):
+    """One row per accepted document version. An event log, not a flag.
+
+    Recording the version is the point: "accepted the terms" is not a useful
+    fact without knowing *which* terms. Bumping a version re-prompts, and the
+    history of what someone agreed to survives the change.
+    """
+
+    __tablename__ = "user_consents"
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    consent_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    document_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    accepted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    request_id: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+
+    __table_args__ = (
+        Index("ix_user_consents_user_type", "user_id", "consent_type"),
+    )
+
+
+class DeletedIdentity(Base, TimestampMixin):
+    """Tombstone: a Clerk identity that must never be provisioned again.
+
+    Lazy provisioning creates a profile on first authenticated request, which
+    means a token issued before deletion — or a Clerk identity whose removal
+    failed halfway — would otherwise silently recreate the account the user
+    asked to erase. This row is what denies that, and it outlives the profile
+    on purpose.
+
+    It holds an opaque provider id, timestamps, a state and a retry count.
+    No email, no name, and nothing financial: the minimum needed to refuse a
+    subject and to finish a partial deletion.
+    """
+
+    __tablename__ = "deleted_identities"
+
+    clerk_user_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    # pending -> storage_purged -> complete. `clerk_pending` means our data is
+    # gone but the provider identity has not been revoked yet.
+    state: Mapped[str] = mapped_column(String(24), nullable=False, default="pending")
+    requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    last_attempt_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # An exception CLASS NAME only — never a message, which could quote data.
+    last_error: Mapped[str] = mapped_column(String(80), nullable=False, default="")
+    # The local profile id, kept only until cleanup finishes so a retry knows
+    # what to purge. Cleared on completion.
+    user_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
+
+    __table_args__ = (
+        # The reconciliation sweep scans for unfinished work every tick;
+        # without this it is a sequential scan on each pass.
+        Index("ix_deleted_identities_state", "state"),
     )
 
 

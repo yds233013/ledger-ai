@@ -267,3 +267,38 @@ goes to the logs only.
   in Phase 2 a receipt's file stays in storage for the life of the account.
 - No FX conversion; mixed-currency totals are restricted and disclosed rather
   than converted.
+
+
+## Private beta authentication (Clerk)
+
+The browser sends a Clerk session JWT straight to this API, so the API
+establishes identity itself rather than trusting anything the browser asserts.
+
+**Two token families that can never be interchanged.** Demo sessions use HS256
+tokens this service mints; Clerk uses RS256 tokens signed by keys only ever seen
+through JWKS. Dispatch happens on the *unverified* header — safe, because the
+header selects a verifier and is never read as a claim about the caller — and
+each verifier pins `algorithms` to exactly one value. There is no fallback: a
+token that fails the path it was routed to is rejected, not retried against the
+other. Both directions are tested, including an HS256 token forged with a `kid`
+header and a token asserting `alg: none`.
+
+**Claims enforced:** signature, `kid` against the issuer's JWKS, `iss`, `azp`
+against the exact web origin, `exp`, `nbf` with bounded leeway, `sub` shape, and
+`aud` when configured. A missing `azp` is a rejection — Clerk's documentation
+calls skipping that check a CSRF exposure.
+
+**Identity is the Clerk subject, never the email address.** Clerk lets a user
+change their address, and an identifier the holder can edit is not an identity.
+A partial unique index on `clerk_user_id` is what makes concurrent first
+requests produce exactly one profile.
+
+**Deleted identities stay deleted.** See the tombstone design in
+[deployment.md](deployment.md). The failure it prevents — lazy provisioning
+silently recreating an account from a still-valid pre-deletion token — is the
+worst outcome this feature could produce.
+
+**Invitation addresses are stored as keyed HMACs.** They must be matchable,
+because provisioning finds the invitation from the verified email rather than
+asking the user for a code. A plain hash of an email is enumerable; keying it is
+what makes the column unsearchable without the key.

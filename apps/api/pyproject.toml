@@ -13,7 +13,14 @@ dependencies = [
     "pydantic>=2.10",
     "pydantic-settings>=2.7",
     "python-multipart>=0.0.20",
+    # RS256 verification of Clerk session tokens. PyJWT ships PyJWKClient but
+    # cannot verify an asymmetric signature without this — installed here
+    # rather than as pyjwt[crypto] so the dependency is visible in this list.
     "pyjwt>=2.10",
+    "cryptography>=44.0",
+    # Verifies the Svix signature Clerk puts on webhooks. Signature checking is
+    # exactly the code not to hand-roll.
+    "svix>=1.45",
     "bcrypt>=4.2",
     "redis>=5.2",
     "rq>=2.0",
@@ -40,6 +47,7 @@ ledgerai-worker = "ledgerai.worker:main"
 ledgerai-demo-cleanup = "ledgerai.cli:demo_cleanup_main"
 ledgerai-retention-sweep = "ledgerai.cli:retention_sweep_main"
 ledgerai-backfill-categories = "ledgerai.cli:backfill_categories_main"
+ledgerai-invite = "ledgerai.cli:invite_main"
 
 [project.optional-dependencies]
 dev = [

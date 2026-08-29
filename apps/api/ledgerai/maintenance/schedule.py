@@ -264,6 +264,12 @@ def _retention_sweep() -> Mapping[str, object]:
     return run_retention_sweep()
 
 
+def _account_reconcile() -> Mapping[str, object]:
+    from ..jobs.account_reconcile import run_account_reconcile
+
+    return run_account_reconcile()
+
+
 # The two schedules the cron services used to hold, unchanged in cadence.
 # Demo accounts expire on a 24-hour clock, so an hourly sweep bounds how long an
 # expired one lingers; retention works on 7- and 30-day windows, where daily is
@@ -271,6 +277,13 @@ def _retention_sweep() -> Mapping[str, object]:
 DEMO_CLEANUP = ScheduledSweep("demo-cleanup", interval_seconds=3600, run=_demo_cleanup)
 RETENTION = ScheduledSweep("retention", interval_seconds=86_400, run=_retention_sweep)
 
+# Deletion is the one sweep a user is actively waiting on, and an interrupted
+# one leaves their data in place. Five minutes, so a failed step is retried
+# soon rather than at the next daily tick.
+ACCOUNT_RECONCILE = ScheduledSweep(
+    "account-reconcile", interval_seconds=300, run=_account_reconcile
+)
+
 
 def default_sweeps() -> list[ScheduledSweep]:
-    return [DEMO_CLEANUP, RETENTION]
+    return [DEMO_CLEANUP, RETENTION, ACCOUNT_RECONCILE]

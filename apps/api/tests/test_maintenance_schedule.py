@@ -97,7 +97,17 @@ class TestScheduling:
         """The cadence the cron services had, preserved."""
         assert sched.DEMO_CLEANUP.interval_seconds == 3600
         assert sched.RETENTION.interval_seconds == 86_400
-        assert {s.name for s in sched.default_sweeps()} == {"demo-cleanup", "retention"}
+        assert {s.name for s in sched.default_sweeps()} == {
+            "demo-cleanup",
+            "retention",
+            "account-reconcile",
+        }
+
+    def test_deletion_reconciliation_runs_far_more_often(self) -> None:
+        """Deletion is the one sweep a user is actively waiting on, and an
+        interrupted one leaves their data in place. Five minutes, not a day."""
+        assert sched.ACCOUNT_RECONCILE.interval_seconds == 300
+        assert sched.ACCOUNT_RECONCILE.interval_seconds < sched.DEMO_CLEANUP.interval_seconds
 
     def test_the_shipped_sweeps_call_the_existing_jobs(self) -> None:
         """The business logic must be the same code the cron services ran."""

@@ -84,7 +84,12 @@ async def login(
 
     # Identical response for unknown user and wrong password — no account
     # enumeration through timing or message differences.
-    if user is None or not verify_password(payload.password, user.password_hash):
+    # A Clerk-backed account has no password of ours. Treated exactly like a
+    # wrong password — same branch, same message — so this endpoint cannot be
+    # used to discover which accounts are Clerk-backed.
+    if user is None or not user.password_hash or not verify_password(
+        payload.password, user.password_hash
+    ):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password",

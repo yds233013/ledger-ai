@@ -14,7 +14,16 @@ from sqlalchemy import text
 
 from .config import settings
 from .db import async_engine
-from .routers import alerts, analysis, auth, dashboard, receipts, transactions, uploads
+from .routers import (
+    alerts,
+    analysis,
+    auth,
+    dashboard,
+    receipts,
+    transactions,
+    uploads,
+    webhooks,
+)
 from .routers import settings as settings_router
 from .security.logging import install_redaction
 from .security.ratelimit import probe_limiter_store
@@ -290,6 +299,7 @@ async def readiness(response: Response) -> dict[str, object]:
 
 
 app.include_router(auth.router)
+app.include_router(webhooks.router)
 app.include_router(uploads.router)
 app.include_router(transactions.router)
 app.include_router(dashboard.router)

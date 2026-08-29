@@ -25,6 +25,8 @@ from .tables import (
     AnalysisRun,
     AnalysisStep,
     Category,
+    DeletedIdentity,
+    Invitation,
     MerchantRule,
     ProcessingJob,
     Receipt,
@@ -33,6 +35,7 @@ from .tables import (
     TransactionCorrection,
     Upload,
     User,
+    UserConsent,
 )
 
 __all__ = [
@@ -48,6 +51,7 @@ __all__ = [
     "AnalysisStepName",
     "Base",
     "Category",
+    "DeletedIdentity",
     "CorrectionField",
     "CorrectionScope",
     "JobStage",
@@ -55,6 +59,7 @@ __all__ = [
     "NarratorKind",
     "PlannerKind",
     "ProcessingJob",
+    "Invitation",
     "Receipt",
     "ReceiptLinkMode",
     "ReceiptMatchRejection",
@@ -66,4 +71,5 @@ __all__ = [
     "UploadKind",
     "UploadStatus",
     "User",
+    "UserConsent",
 ]
