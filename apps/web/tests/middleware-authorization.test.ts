@@ -53,7 +53,7 @@ describe('hasSession', () => {
 
 describe('decide — protected routes', () => {
   it('sends an anonymous request to sign-in and remembers where it was going', () => {
-    expect(decide('/dashboard', null)).toEqual({
+    expect(decide('/dashboard', { authjs: null })).toEqual({
       action: 'redirect',
       to: '/sign-in',
       callbackUrl: '/dashboard',
@@ -61,7 +61,7 @@ describe('decide — protected routes', () => {
   });
 
   it('lets an authenticated request through', () => {
-    expect(decide('/dashboard', REAL_SESSION)).toEqual({ action: 'next' });
+    expect(decide('/dashboard', { authjs: REAL_SESSION })).toEqual({ action: 'next' });
   });
 
   it.each(['/dashboard', '/transactions', '/receipts', '/upload', '/settings', '/ask', '/'])(
@@ -69,7 +69,7 @@ describe('decide — protected routes', () => {
     (route) => {
       // The fail-open, stated per route: this is what a bare `!request.auth`
       // check got wrong, and it got it wrong everywhere at once.
-      expect(decide(route, CONFIG_ERROR)).toEqual({
+      expect(decide(route, { authjs: CONFIG_ERROR })).toEqual({
         action: 'redirect',
         to: '/sign-in',
         callbackUrl: route,
@@ -80,21 +80,21 @@ describe('decide — protected routes', () => {
 
 describe('decide — the sign-in page', () => {
   it('stays public for anonymous visitors', () => {
-    expect(decide('/sign-in', null)).toEqual({ action: 'next' });
+    expect(decide('/sign-in', { authjs: null })).toEqual({ action: 'next' });
   });
 
   it('sends a signed-in visitor to the dashboard', () => {
-    expect(decide('/sign-in', REAL_SESSION)).toEqual({ action: 'redirect', to: '/dashboard' });
+    expect(decide('/sign-in', { authjs: REAL_SESSION })).toEqual({ action: 'redirect', to: '/dashboard' });
   });
 
   it('does not bounce a visitor off sign-in on a configuration error', () => {
     // The same bug from the other side. Treating the error object as a session
     // would redirect anonymous visitors away from the only page that could get
     // them a real one, locking everybody out of a misconfigured deployment.
-    expect(decide('/sign-in', CONFIG_ERROR)).toEqual({ action: 'next' });
+    expect(decide('/sign-in', { authjs: CONFIG_ERROR })).toEqual({ action: 'next' });
   });
 
   it('keeps the callback URL of a deep link', () => {
-    expect(decide('/sign-in/whatever', null)).toEqual({ action: 'next' });
+    expect(decide('/sign-in/whatever', { authjs: null })).toEqual({ action: 'next' });
   });
 });

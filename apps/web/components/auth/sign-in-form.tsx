@@ -14,7 +14,13 @@ import { Spinner } from '@/components/ui/primitives';
  * populated app. Credentials sit below it for local development, and GitHub
  * appears only when the deployment has actually been configured for it.
  */
-export function SignInForm({ githubEnabled }: { githubEnabled: boolean }) {
+export function SignInForm({
+  githubEnabled,
+  betaEnabled = false,
+}: {
+  githubEnabled: boolean;
+  betaEnabled?: boolean;
+}) {
   const router = useRouter();
   const params = useSearchParams();
   const callbackUrl = params.get('callbackUrl') ?? '/dashboard';
@@ -88,7 +94,7 @@ export function SignInForm({ githubEnabled }: { githubEnabled: boolean }) {
           data-testid="try-demo"
         >
           {pending === 'demo' ? <Spinner /> : null}
-          {pending === 'demo' ? 'Building your demo…' : 'Try the demo'}
+          {pending === 'demo' ? 'Building your demo…' : 'Try the 24-hour demo'}
         </button>
         <p className="mt-2 text-xs leading-relaxed text-ink-muted">
           Creates a private account with about 250 synthetic transactions across eight
@@ -96,6 +102,19 @@ export function SignInForm({ githubEnabled }: { githubEnabled: boolean }) {
           after 24 hours.
         </p>
       </div>
+
+      {betaEnabled ? (
+        <div data-testid="beta-signin-block">
+          <a href="/beta" className="btn-secondary w-full" data-testid="beta-signin">
+            Invited beta user sign-in
+          </a>
+          <p className="mt-2 text-xs leading-relaxed text-ink-muted">
+            For people who have received an invitation. Beta accounts keep their data
+            between visits and sign in with a code sent to the invited email address.
+            Sign-up is closed &mdash; an invitation is required.
+          </p>
+        </div>
+      ) : null}
 
       {error ? (
         <p role="alert" className="text-sm text-negative">

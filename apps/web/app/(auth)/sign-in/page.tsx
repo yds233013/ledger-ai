@@ -2,6 +2,7 @@ import { Suspense } from 'react';
 
 import { githubEnabled } from '@/auth';
 import { SignInForm } from '@/components/auth/sign-in-form';
+import { clerkConfigured } from '@/lib/clerk-config';
 
 /**
  * A server component, so it can read whether GitHub OAuth is configured.
@@ -30,7 +31,7 @@ export default function SignInPage() {
 
         <div className="card p-6">
           <Suspense fallback={<div className="h-80" />}>
-            <SignInForm githubEnabled={githubEnabled} />
+            <SignInForm githubEnabled={githubEnabled} betaEnabled={clerkConfigured} />
           </Suspense>
         </div>
 

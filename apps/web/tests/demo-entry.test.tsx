@@ -32,9 +32,9 @@ beforeEach(() => {
 });
 
 describe('demo entry', () => {
-  it('offers a prominent "Try the demo" action', () => {
+  it('offers a prominent "Try the 24-hour demo" action', () => {
     render(<SignInForm githubEnabled={false} />);
-    expect(screen.getByRole('button', { name: /Try the demo/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Try the 24-hour demo/i })).toBeInTheDocument();
   });
 
   it('says what the demo creates before it is clicked', () => {
@@ -51,14 +51,14 @@ describe('demo entry', () => {
 
   it('signs in through the demo provider', async () => {
     render(<SignInForm githubEnabled={false} />);
-    await userEvent.click(screen.getByRole('button', { name: /Try the demo/i }));
+    await userEvent.click(screen.getByRole('button', { name: /Try the 24-hour demo/i }));
 
     expect(mockSignIn).toHaveBeenCalledWith('demo', { redirect: false });
   });
 
   it('never sends credentials for the demo', async () => {
     render(<SignInForm githubEnabled={false} />);
-    await userEvent.click(screen.getByRole('button', { name: /Try the demo/i }));
+    await userEvent.click(screen.getByRole('button', { name: /Try the 24-hour demo/i }));
 
     const [, options] = mockSignIn.mock.calls[0];
     expect(options).not.toHaveProperty('email');
@@ -70,7 +70,7 @@ describe('demo entry', () => {
     mockSignIn.mockReturnValue(new Promise((r) => { resolve = r; }));
 
     render(<SignInForm githubEnabled={false} />);
-    await userEvent.click(screen.getByRole('button', { name: /Try the demo/i }));
+    await userEvent.click(screen.getByRole('button', { name: /Try the 24-hour demo/i }));
 
     expect(await screen.findByText(/Building your demo/i)).toBeInTheDocument();
     resolve({ ok: true });
@@ -78,7 +78,7 @@ describe('demo entry', () => {
 
   it('lands on the dashboard when provisioning succeeds', async () => {
     render(<SignInForm githubEnabled={false} />);
-    await userEvent.click(screen.getByRole('button', { name: /Try the demo/i }));
+    await userEvent.click(screen.getByRole('button', { name: /Try the 24-hour demo/i }));
 
     await waitFor(() => expect(nav.push).toHaveBeenCalledWith('/dashboard'));
   });
@@ -87,7 +87,7 @@ describe('demo entry', () => {
     mockSignIn.mockResolvedValue({ error: 'CredentialsSignin' });
 
     render(<SignInForm githubEnabled={false} />);
-    await userEvent.click(screen.getByRole('button', { name: /Try the demo/i }));
+    await userEvent.click(screen.getByRole('button', { name: /Try the 24-hour demo/i }));
 
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent(/wait a few minutes/i);
@@ -97,10 +97,10 @@ describe('demo entry', () => {
     mockSignIn.mockResolvedValue({ error: 'CredentialsSignin' });
 
     render(<SignInForm githubEnabled={false} />);
-    await userEvent.click(screen.getByRole('button', { name: /Try the demo/i }));
+    await userEvent.click(screen.getByRole('button', { name: /Try the 24-hour demo/i }));
 
     await screen.findByRole('alert');
-    expect(screen.getByRole('button', { name: /Try the demo/i })).toBeEnabled();
+    expect(screen.getByRole('button', { name: /Try the 24-hour demo/i })).toBeEnabled();
   });
 });
 
@@ -134,7 +134,7 @@ describe('optional GitHub sign-in', () => {
   it('does not gate the demo behind GitHub', () => {
     render(<SignInForm githubEnabled />);
     // Both are available; the demo never requires authorising anything.
-    expect(screen.getByRole('button', { name: /Try the demo/i })).toBeEnabled();
+    expect(screen.getByRole('button', { name: /Try the 24-hour demo/i })).toBeEnabled();
   });
 
   it('uses the github provider when clicked', async () => {

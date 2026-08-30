@@ -1,56 +1,141 @@
 /**
  * Who may see which route.
  *
- * Kept apart from `middleware.ts` on purpose. The middleware module imports
- * the Auth.js runtime, which drags in `next/server` and only resolves inside a
- * Next.js build — so a rule that lives there cannot be unit tested. This one
- * has no imports at all, and GHSA-8fpg-xm3f-6cx3 is the argument for why that
- * is worth a file: the fail-open it describes lived in precisely this decision,
- * and a decision nobody can call directly is a decision nobody can test.
+ * Two entirely separate ways to be signed in reach this file, and the whole
+ * point of it is that they never blur into each other:
+ *
+ *   demo — an Auth.js session, HS256, cookie `authjs.session-token`. Ephemeral,
+ *          synthetic data, deletes itself within a day.
+ *   beta — a Clerk session, RS256, Clerk's own cookie. A real invited person
+ *          with real financial records.
+ *
+ * They are different credentials, verified by different code, for different
+ * kinds of account. A holder of one must never be treated as a holder of the
+ * other, in either direction — which is why `identify` returns a tagged
+ * principal rather than a boolean, and why holding both at once is an outcome
+ * of its own rather than a coin flip.
+ *
+ * Kept apart from `middleware.ts` because that module imports the Auth.js and
+ * Clerk runtimes, which only resolve inside a Next.js build. This file imports
+ * nothing, so every rule below is unit tested directly. GHSA-8fpg-xm3f-6cx3 is
+ * the standing argument for that: the fail-open it described lived in exactly
+ * this decision.
  */
 
 export type RouteDecision =
   | { action: 'next' }
   | { action: 'redirect'; to: string; callbackUrl?: string };
 
+/** Which kind of account is making the request, if any. */
+export type Principal =
+  | { kind: 'anonymous' }
+  | { kind: 'demo'; userId: string }
+  | { kind: 'beta'; clerkUserId: string }
+  | { kind: 'conflict' };
+
+/** Whatever the two runtimes hand the middleware, untyped on purpose. */
+export interface SessionSignals {
+  /** The Auth.js session object, or null. */
+  authjs?: unknown;
+  /** Clerk's resolved user id, or null. Never an object. */
+  clerkUserId?: unknown;
+}
+
+/** Routes that stay reachable without any session at all. */
+const PUBLIC_PREFIXES = ['/sign-in', '/beta'] as const;
+
 /**
- * Whether a request carries a real, identified session.
+ * Routes a beta (Clerk) account may not reach yet.
  *
- * Deliberately `auth?.user?.id` rather than `!!auth`. Under
- * GHSA-8fpg-xm3f-6cx3, an Auth.js configuration error — an unset AUTH_SECRET
- * being the usual cause — made the `auth` object a truthy error payload of the
- * shape `{ message: "There was a problem with the server configuration" }`.
- * Every `!auth` check then read as "signed in", and the middleware waved
- * through every anonymous request to every protected route.
- *
- * next-auth 5.0.0-beta.32 fixes that at the source, so a failed session lookup
- * now yields no session at all. This check does not depend on that fix: an
- * error payload has no `user`, so it fails closed on either version. The
- * library is the repair and this is the belt to its braces — not redundant,
- * because the next such bug will arrive without warning too.
- *
- * `user.id` specifically, not `user`, because the session is only useful to
- * this application once the jwt callback has resolved a Ledger AI user id.
+ * Uploads are how real financial records enter the system, and the quotas and
+ * sensitive-identifier rejection that must guard that path are not built. Demo
+ * accounts keep it because their data is synthetic and expires. This is a
+ * deliberate, temporary asymmetry, not an oversight.
  */
-export function hasSession(auth: unknown): boolean {
-  const user = (auth as { user?: { id?: unknown } } | null | undefined)?.user;
-  return typeof user?.id === 'string' && user.id.length > 0;
+const BETA_BLOCKED_PREFIXES = ['/upload'] as const;
+
+function hasPrefix(pathname: string, prefixes: readonly string[]): boolean {
+  return prefixes.some((p) => pathname === p || pathname.startsWith(`${p}/`));
 }
 
 /**
- * Where a request should go, given its path and whatever session it carries.
+ * Read an Auth.js session into a demo user id.
+ *
+ * Deliberately `user.id` rather than the truthiness of the session object.
+ * Under GHSA-8fpg-xm3f-6cx3 a configuration error made that object a truthy
+ * error payload, so every `!auth` check read as "signed in". An error payload
+ * has no `user.id`, so this fails closed on any version of the library.
  */
-export function decide(pathname: string, auth: unknown): RouteDecision {
-  const isSignIn = pathname.startsWith('/sign-in');
-  const signedIn = hasSession(auth);
+function demoUserId(authjs: unknown): string | null {
+  const user = (authjs as { user?: { id?: unknown } } | null | undefined)?.user;
+  return typeof user?.id === 'string' && user.id.length > 0 ? user.id : null;
+}
 
-  if (!signedIn && !isSignIn) {
-    return { action: 'redirect', to: '/sign-in', callbackUrl: pathname };
+/** Clerk hands back a string id or nothing. Anything else is not a session. */
+function betaUserId(clerkUserId: unknown): string | null {
+  return typeof clerkUserId === 'string' && clerkUserId.length > 0 ? clerkUserId : null;
+}
+
+/**
+ * Resolve the two signals to exactly one principal.
+ *
+ * Holding both credentials at once is not a state this application can produce
+ * — the sign-in page offers one or the other and each flow clears the other's
+ * cookie — so if it happens something is wrong. Picking one would be choosing
+ * silently between a synthetic account and a real one, which is precisely the
+ * substitution this module exists to prevent. It resolves to `conflict`, and
+ * the caller sends the request back to sign-in to start cleanly.
+ */
+export function identify(signals: SessionSignals | null | undefined): Principal {
+  const demo = demoUserId(signals?.authjs);
+  const beta = betaUserId(signals?.clerkUserId);
+
+  if (demo && beta) return { kind: 'conflict' };
+  if (beta) return { kind: 'beta', clerkUserId: beta };
+  if (demo) return { kind: 'demo', userId: demo };
+  return { kind: 'anonymous' };
+}
+
+/** Where a request should go, given its path and whatever sessions it carries. */
+export function decide(
+  pathname: string,
+  signals: SessionSignals | null | undefined,
+): RouteDecision {
+  const principal = identify(signals);
+  const isPublic = hasPrefix(pathname, PUBLIC_PREFIXES);
+
+  // A contradictory pair is resolved by no one but the visitor, at sign-in.
+  if (principal.kind === 'conflict') {
+    return isPublic ? { action: 'next' } : { action: 'redirect', to: '/sign-in' };
   }
 
-  if (signedIn && isSignIn) {
+  if (principal.kind === 'anonymous') {
+    return isPublic
+      ? { action: 'next' }
+      : { action: 'redirect', to: '/sign-in', callbackUrl: pathname };
+  }
+
+  // Signed in, on a public entry page: send them where they were going.
+  if (isPublic) return { action: 'redirect', to: '/dashboard' };
+
+  if (principal.kind === 'beta' && hasPrefix(pathname, BETA_BLOCKED_PREFIXES)) {
     return { action: 'redirect', to: '/dashboard' };
   }
 
   return { action: 'next' };
+}
+
+/** Exported for tests and for the sign-in page's copy. */
+export const PUBLIC_ROUTE_PREFIXES = PUBLIC_PREFIXES;
+export const BETA_BLOCKED_ROUTE_PREFIXES = BETA_BLOCKED_PREFIXES;
+
+/**
+ * Whether an Auth.js session object represents a signed-in demo user.
+ *
+ * Retained as the narrow, single-signal form of the rule that
+ * GHSA-8fpg-xm3f-6cx3 turned into a vulnerability: ask for an identified user,
+ * never for the object to merely exist.
+ */
+export function hasSession(authjs: unknown): boolean {
+  return identify({ authjs }).kind === 'demo';
 }

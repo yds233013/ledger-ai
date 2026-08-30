@@ -15,10 +15,11 @@
     "@tanstack/react-query": "^5.62.0",
     "@tanstack/react-query-devtools": "^5.62.0",
     "clsx": "^2.1.1",
+    "@clerk/nextjs": "7.8.3",
     "next": "15.5.24",
     "next-auth": "5.0.0-beta.32",
-    "react": "19.0.0",
-    "react-dom": "19.0.0",
+    "react": "19.0.3",
+    "react-dom": "19.0.3",
     "recharts": "^2.15.0",
     "tailwind-merge": "^2.6.0",
     "zustand": "^5.0.2"

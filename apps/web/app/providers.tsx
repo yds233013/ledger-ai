@@ -5,6 +5,7 @@ import { SessionProvider } from 'next-auth/react';
 import { useState, type ReactNode } from 'react';
 
 import { ApiError } from '@/lib/api-client';
+import { ClerkGate } from '@/components/auth/clerk-gate';
 
 export function Providers({ children }: { children: ReactNode }) {
   const [client] = useState(
@@ -26,9 +27,15 @@ export function Providers({ children }: { children: ReactNode }) {
       }),
   );
 
+  // Both providers are always mounted. SessionProvider carries the demo
+  // session; ClerkGate mounts ClerkProvider only when a publishable key exists
+  // and otherwise renders its children untouched, so an unconfigured
+  // deployment behaves exactly as it did before Clerk was added.
   return (
-    <SessionProvider>
-      <QueryClientProvider client={client}>{children}</QueryClientProvider>
-    </SessionProvider>
+    <ClerkGate>
+      <SessionProvider>
+        <QueryClientProvider client={client}>{children}</QueryClientProvider>
+      </SessionProvider>
+    </ClerkGate>
   );
 }
