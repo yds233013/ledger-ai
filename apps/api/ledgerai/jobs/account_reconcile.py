@@ -36,6 +36,7 @@ from ..config import settings
 from ..db import sync_session
 from ..models import User
 from ..services import account_deletion
+from ..services.clerk_admin import revoke_identity
 from ..services.storage import StorageError, get_storage
 
 logger = logging.getLogger(__name__)
@@ -77,16 +78,16 @@ def _purge_local_data(session: Any, tombstone: Any) -> dict[str, int]:
 def _revoke_clerk_identity(clerk_user_id: str) -> bool:
     """Revoke the identity at the provider.
 
-    Returns True when the identity is gone or there is nothing to do. A stub
-    while Clerk is disabled — see the module docstring.
+    Returns True when the identity is gone or there is nothing to do.
+
+    With Clerk disabled there is no provider to call and no identity that could
+    exist, so there is nothing outstanding — the local purge is the whole of the
+    deletion and this reports done. With Clerk enabled the call is real, and
+    anything short of "gone" leaves the tombstone unfinished for the next tick.
     """
     if not settings.clerk_enabled:
         return True
-    # Implemented when Clerk is enabled: DELETE /v1/users/{id} on the Backend
-    # API using CLERK_SECRET_KEY, treating 404 as success because the identity
-    # being already gone is the desired end state.
-    logger.info("account_reconcile.clerk_revocation_pending")
-    return False
+    return revoke_identity(clerk_user_id).succeeded
 
 
 def reconcile_deletions(

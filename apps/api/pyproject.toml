@@ -21,6 +21,9 @@ dependencies = [
     # Verifies the Svix signature Clerk puts on webhooks. Signature checking is
     # exactly the code not to hand-roll.
     "svix>=1.45",
+    # Exact pin: this is the client that revokes a Clerk identity during account
+    # deletion. A surprise upgrade there is a surprise in the deletion path.
+    "httpx==0.28.1",
     "bcrypt>=4.2",
     "redis>=5.2",
     "rq>=2.0",

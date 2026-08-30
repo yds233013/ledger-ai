@@ -76,6 +76,12 @@ class Settings(BaseSettings):
     # template adds one, set this and it becomes mandatory.
     clerk_audience: str = ""
     clerk_webhook_signing_secret: str = ""
+    # Clerk Backend API key. Read ONLY to revoke an identity during account
+    # deletion. Never logged, never returned, never placed in an error message.
+    clerk_secret_key: str = ""
+    clerk_api_base: str = "https://api.clerk.com/v1"
+    # Bounded, so a hung provider cannot pin a worker thread. The sweep retries.
+    clerk_http_timeout_seconds: float = 10.0
     # Seconds of clock skew tolerated on exp/nbf.
     clerk_leeway_seconds: int = 30
 
