@@ -26,7 +26,18 @@ import { decide, type SessionSignals } from '@/lib/route-access';
  */
 const clerkConfigured = Boolean(process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY);
 
+/**
+ * API routes are matched only so Clerk can attach its session context to
+ * /api/auth/token. They must never be redirected: Auth.js owns /api/auth/*,
+ * and turning one of its endpoints into a 307 would break the demo sign-in.
+ */
+function isApiPath(pathname: string): boolean {
+  return pathname === '/api' || pathname.startsWith('/api/');
+}
+
 function apply(request: NextRequest, signals: SessionSignals) {
+  if (isApiPath(request.nextUrl.pathname)) return NextResponse.next();
+
   const decision = decide(request.nextUrl.pathname, signals);
 
   if (decision.action === 'redirect') {
@@ -55,6 +66,7 @@ function buildClerkMiddleware() {
   // publishable key when it runs, so this is only ever called behind the guard.
   return clerkMiddleware(async (clerkAuth, request) => {
     const { userId } = await clerkAuth();
+    if (isApiPath(request.nextUrl.pathname)) return NextResponse.next();
     const authjs = await getToken({
       req: request,
       secret: process.env.AUTH_SECRET,
@@ -74,5 +86,10 @@ function buildClerkMiddleware() {
 export default clerkConfigured ? buildClerkMiddleware() : demoOnlyMiddleware;
 
 export const config = {
-  matcher: ['/((?!api|_next/static|_next/image|favicon.ico).*)'],
+  matcher: [
+    '/((?!api|_next/static|_next/image|favicon.ico).*)',
+    // Clerk resolves a session only for requests its middleware has seen, and
+    // this route has to read one. It is passed straight through above.
+    '/api/auth/token',
+  ],
 };

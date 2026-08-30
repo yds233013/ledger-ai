@@ -33,8 +33,16 @@ const NO_STORE = { 'Cache-Control': 'no-store' } as const;
 
 async function clerkSession(): Promise<{ userId: string | null; getToken: () => Promise<string | null> }> {
   if (!clerkConfigured) return { userId: null, getToken: async () => null };
-  const resolved = await clerkAuth();
-  return { userId: resolved.userId, getToken: () => resolved.getToken() };
+  try {
+    const resolved = await clerkAuth();
+    return { userId: resolved.userId, getToken: () => resolved.getToken() };
+  } catch {
+    // Clerk throws when its middleware has not seen the request. A demo user
+    // has no Clerk session anyway, and their token must not depend on Clerk
+    // being reachable, correctly matched, or up. Degrade to "no Clerk session"
+    // rather than turning the demo's only credential endpoint into a 500.
+    return { userId: null, getToken: async () => null };
+  }
 }
 
 export async function GET() {
