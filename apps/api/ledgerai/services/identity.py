@@ -27,6 +27,7 @@ import hmac
 import logging
 import unicodedata
 import uuid
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import func, select, update
@@ -179,7 +180,8 @@ def provision_profile(
     session: Session,
     *,
     clerk_user_id: str,
-    email: str | None,
+    email: str | None = None,
+    resolve_email: Callable[[], str | None] | None = None,
     display_name: str | None = None,
     now: datetime | None = None,
 ) -> User:
@@ -189,6 +191,12 @@ def provision_profile(
     webhook delivery is not guaranteed and introduces ordering races. The
     verified token is the source of truth, so there is no window in which a
     signed-in user has no profile.
+
+    The address arrives through `resolve_email` rather than as a claim, because
+    a Clerk session token does not carry one — and even a template that added
+    one would say nothing about whether it had been verified. The callable is
+    invoked only on the path that creates a profile, so a returning user costs
+    no call to Clerk at all.
     """
     now = now or datetime.now(UTC)
 
@@ -212,6 +220,10 @@ def provision_profile(
             existing.email = normalize_email(email)
         existing.last_seen_at = now
         return existing
+
+    # Only now — with no profile to return — is the address worth fetching.
+    if not email and resolve_email is not None:
+        email = resolve_email()
 
     if not email:
         raise ProvisioningError("A verified email address is required to create an account.")

@@ -37,6 +37,24 @@ DEMO_EXPIRED_ERROR = HTTPException(
 )
 
 
+_EMAIL_LOOKUP_FALLBACK = (
+    "Could not confirm your email address with Clerk. Please try again in a moment."
+)
+
+# Distinct causes, distinct remedies — but none of them names an address, an
+# identifier, or anything about our configuration.
+_EMAIL_LOOKUP_MESSAGES = {
+    "no_verified_email": (
+        "Your Clerk account has no verified email address. Verify your address "
+        "with Clerk and try again."
+    ),
+    "ambiguous": (
+        "Your Clerk account has several verified email addresses and no primary "
+        "one. Set a primary address with Clerk and try again."
+    ),
+    "not_found": "This sign-in is no longer valid. Please sign in again.",
+}
+
 ACCOUNT_DELETED_ERROR = HTTPException(
     status_code=status.HTTP_401_UNAUTHORIZED,
     detail="This account has been deleted.",
@@ -91,7 +109,23 @@ async def _user_from_clerk_token(
 
     from anyio import to_thread
 
+    from .services.clerk_admin import EmailOutcome, fetch_verified_email
     from .services.identity import ProvisioningError, provision_profile
+
+    def _resolve_email() -> str | None:
+        """The verified address for this subject, from Clerk's Backend API.
+
+        Called only when a profile is about to be created. Every non-success
+        outcome raises rather than returning None, so the caller cannot mistake
+        "Clerk was unreachable" for "this person has no address" — the first
+        must be retried, the second must not.
+        """
+        outcome, email = fetch_verified_email(identity.subject)
+        if outcome is EmailOutcome.RESOLVED and email:
+            return email
+        raise ProvisioningError(
+            _EMAIL_LOOKUP_MESSAGES.get(outcome.value, _EMAIL_LOOKUP_FALLBACK)
+        )
 
     def _provision() -> uuid.UUID:
         # The injected factory, not the module-level one. A code path that can
@@ -102,7 +136,10 @@ async def _user_from_clerk_token(
             user = provision_profile(
                 sync_session,
                 clerk_user_id=identity.subject,
-                email=identity.email,
+                # A Clerk session token carries no address, and a templated
+                # claim would not carry a verification status either. Resolved
+                # from the Backend API, lazily, only when creating.
+                resolve_email=_resolve_email,
             )
             user_id = user.id
             sync_session.commit()
