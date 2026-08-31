@@ -112,18 +112,25 @@ describe('both kinds of session reach the app', () => {
   );
 });
 
-describe('uploads stay closed to persistent accounts', () => {
+describe('uploads', () => {
+  it('are open to persistent accounts now that quotas and screening exist', () => {
+    // This route was closed to beta sessions for one phase, because it is where
+    // real financial records enter and nothing yet bounded what they could
+    // consume or contained what they could carry. Both now exist.
+    expect(decide('/upload', { clerkUserId: CLERK_ID })).toEqual({ action: 'next' });
+  });
+
+  it('are open to demo sessions, whose data is synthetic and expires', () => {
+    expect(decide('/upload', { authjs: DEMO })).toEqual({ action: 'next' });
+  });
+
   it.each(BETA_BLOCKED_ROUTE_PREFIXES)('a beta session cannot reach %s', (route) => {
-    // Quotas and sensitive-identifier rejection are not built yet, and this is
-    // where real financial records would enter.
+    // Empty today. Kept so that closing a route again is one line plus a test
+    // that already covers it.
     expect(decide(route, { clerkUserId: CLERK_ID })).toEqual({
       action: 'redirect',
       to: '/dashboard',
     });
-  });
-
-  it('a demo session still can, because its data is synthetic and expires', () => {
-    expect(decide('/upload', { authjs: DEMO })).toEqual({ action: 'next' });
   });
 });
 

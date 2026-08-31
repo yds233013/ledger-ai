@@ -47,12 +47,16 @@ const PUBLIC_PREFIXES = ['/sign-in', '/beta'] as const;
 /**
  * Routes a beta (Clerk) account may not reach yet.
  *
- * Uploads are how real financial records enter the system, and the quotas and
- * sensitive-identifier rejection that must guard that path are not built. Demo
- * accounts keep it because their data is synthetic and expires. This is a
- * deliberate, temporary asymmetry, not an oversight.
+ * Empty, and deliberately kept rather than deleted. `/upload` sat here for one
+ * phase because uploads are how real financial records enter the system and the
+ * quotas and sensitive-identifier rejection that must guard that path did not
+ * exist yet. They do now — per-account budgets, whole-file refusal of unmasked
+ * identifiers, and a consent gate in front of the form — so the route is open.
+ *
+ * The list stays because "close a route to persistent accounts until the thing
+ * that protects it ships" is a move worth being able to make again in one line.
  */
-const BETA_BLOCKED_PREFIXES = ['/upload'] as const;
+const BETA_BLOCKED_PREFIXES: readonly string[] = [];
 
 function hasPrefix(pathname: string, prefixes: readonly string[]): boolean {
   return prefixes.some((p) => pathname === p || pathname.startsWith(`${p}/`));
