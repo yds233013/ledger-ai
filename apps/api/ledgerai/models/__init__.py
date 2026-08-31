@@ -34,8 +34,10 @@ from .tables import (
     Transaction,
     TransactionCorrection,
     Upload,
+    UsageReservation,
     User,
     UserConsent,
+    UserUsage,
 )
 
 __all__ = [
@@ -67,6 +69,8 @@ __all__ = [
     "StepStatus",
     "Transaction",
     "TransactionCorrection",
+    "UsageReservation",
+    "UserUsage",
     "Upload",
     "UploadKind",
     "UploadStatus",

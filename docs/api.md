@@ -111,6 +111,9 @@ verbatim).
 | `GET` | `/api/alerts` | Filter by status. Carries the standing "not fraud detection" disclaimer. |
 | `PATCH` | `/api/alerts/{id}` | Dismiss or resolve. |
 | `GET` | `/api/settings/profile` | Profile, capability status, AI disclosure, demo expiry. |
+| `GET` | `/api/settings/consents` | Which documents are required, which are accepted, and at what version. |
+| `POST` | `/api/settings/consents` | Record acceptance of one or more documents at their current version. |
+| `GET` | `/api/settings/usage` | This account's own consumption against each private-beta budget. `applies: false` for demo accounts. |
 | `GET` | `/api/settings/export` | Everything as a ZIP. Rate limited. |
 | `POST` | `/api/settings/delete-data` | Keeps the sign-in and accounts. `dry_run` previews. |
 | `POST` | `/api/settings/delete-account` | Removes everything. `dry_run` previews. |
@@ -127,8 +130,8 @@ stays.
 |---|---|
 | `401` | Missing, invalid or expired token — including an **expired demo session**, whose message says so. |
 | `404` | Not found *or not yours*. Never `403`: a 403 confirms the row exists. |
-| `422` | Validation. The first useful message, not a nested error tree. |
-| `429` | Rate limited, with `Retry-After`. |
+| `422` | Validation. The first useful message, not a nested error tree. Also an upload refused for carrying an unmasked identifier — `X-Rejected-Categories` names the categories found, never a row, column or value. |
+| `429` | Rate limited, with `Retry-After`; or a durable quota is exhausted, with `X-Quota`, `X-Quota-Limit`, `X-Quota-Remaining` and `X-Quota-Reset`. |
 | `500` | Generic message plus a `correlation_id` that ties it to the logged traceback. |
 | `503` | A dependency needed to enforce a public rate limit is unavailable in production. |
 

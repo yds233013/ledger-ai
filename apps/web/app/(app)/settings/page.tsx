@@ -2,8 +2,10 @@
 
 import { useQuery } from '@tanstack/react-query';
 
+import { ConsentCard } from '@/components/settings/consent-card';
 import { DangerZone } from '@/components/settings/danger-zone';
 import { ExportCard } from '@/components/settings/export-card';
+import { UsageCard } from '@/components/settings/usage-card';
 import { AiBadge, Badge, Card, CardHeader, ErrorState, Skeleton } from '@/components/ui/primitives';
 import { api } from '@/lib/api-client';
 import { queryKeys } from '@/lib/query-keys';
@@ -147,6 +149,10 @@ export default function SettingsPage() {
           </div>
         </div>
       </Card>
+
+      <ConsentCard isDemo={data.is_demo} />
+
+      <UsageCard />
 
       <ExportCard />
 

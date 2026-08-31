@@ -6,6 +6,7 @@ from functools import lru_cache
 from ipaddress import IPv4Network, IPv6Network, ip_network
 from pathlib import Path
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -93,6 +94,26 @@ class Settings(BaseSettings):
     terms_version: str = "2026-08-draft-1"
     privacy_version: str = "2026-08-draft-1"
     upload_consent_version: str = "2026-08-draft-1"
+
+    # --- Private-beta quotas -------------------------------------------------
+    # Durable, per-user budgets for PERSISTENT (Clerk) accounts only. Demo
+    # accounts keep the existing Redis rate limits and their 24-hour expiry;
+    # nothing here applies to them.
+    #
+    # These are PRIVATE-BETA DEFAULTS, not permanent product limits. They are
+    # sized for roughly twenty invited accounts against a 5 GB Postgres volume
+    # and Cloudflare R2's free tier, and are expected to change.
+    #
+    # Daily windows reset at UTC midnight. UTC rather than a local zone because
+    # the reset must not move when a user travels, and the server has no
+    # business guessing where they are.
+    quota_uploads_per_day: int = 25
+    quota_upload_bytes_per_day: int = 50 * 1024 * 1024
+    quota_stored_bytes: int = 250 * 1024 * 1024
+    quota_transaction_rows: int = 25_000
+    quota_receipts: int = 500
+    quota_concurrent_jobs: int = 3
+    quota_max_job_attempts: int = 3
 
     # --- AI -----------------------------------------------------------------
     # Phase 1 ships the deterministic engine only. These exist so the Phase 2
@@ -207,6 +228,39 @@ class Settings(BaseSettings):
     def local_storage_path(self) -> Path:
         path = Path(self.local_storage_dir)
         return path if path.is_absolute() else REPO_ROOT / path
+
+    @model_validator(mode="after")
+    def _validate_quotas(self) -> Settings:
+        """A quota that cannot admit one legal upload is a closed door.
+
+        Checked at construction rather than per request: a deployment
+        misconfigured this way should refuse to start, not accept traffic and
+        then reject every upload for a reason nobody can see.
+        """
+        positives = {
+            "QUOTA_UPLOADS_PER_DAY": self.quota_uploads_per_day,
+            "QUOTA_UPLOAD_BYTES_PER_DAY": self.quota_upload_bytes_per_day,
+            "QUOTA_STORED_BYTES": self.quota_stored_bytes,
+            "QUOTA_TRANSACTION_ROWS": self.quota_transaction_rows,
+            "QUOTA_RECEIPTS": self.quota_receipts,
+            "QUOTA_CONCURRENT_JOBS": self.quota_concurrent_jobs,
+            "QUOTA_MAX_JOB_ATTEMPTS": self.quota_max_job_attempts,
+        }
+        for name, value in positives.items():
+            if value <= 0:
+                raise ValueError(f"{name} must be greater than zero")
+
+        if self.quota_upload_bytes_per_day < self.max_upload_bytes:
+            raise ValueError(
+                "QUOTA_UPLOAD_BYTES_PER_DAY must be at least MAX_UPLOAD_BYTES, "
+                "or no upload of the permitted size could ever succeed"
+            )
+        if self.quota_stored_bytes < self.max_upload_bytes:
+            raise ValueError(
+                "QUOTA_STORED_BYTES must be at least MAX_UPLOAD_BYTES, "
+                "or a first upload of the permitted size could never be stored"
+            )
+        return self
 
 
 @lru_cache

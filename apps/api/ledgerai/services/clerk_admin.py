@@ -119,10 +119,11 @@ def revoke_identity(
             break
 
         # Our record carries the outcome and nothing else: no secret, no
-        # Authorization header, no response body, no email address. (httpx's
-        # own INFO log line does include the request URL, and therefore the
-        # clerk_user_id — the same identifier already stored in the
-        # tombstone. It is not a secret and not financial data.)
+        # Authorization header, no response body, no email address. httpx logs
+        # its own INFO line containing the request URL, and that URL carries the
+        # clerk_user_id — so the redacting log filter rewrites it, leaving the
+        # method, host, path shape and status that make a failed call
+        # diagnosable while the identifier itself does not reach the log.
         logger.info("clerk_admin.revoke outcome=%s", outcome.value)
         return outcome
     finally:

@@ -263,6 +263,73 @@ class DeletedIdentity(Base, TimestampMixin):
     )
 
 
+class UsageReservation(Base, TimestampMixin):
+    """A claim on a user's budget, held while work is in flight.
+
+    Quotas cannot be enforced by counting committed rows alone: between the
+    check and the insert, a concurrent request can pass the same check. A
+    reservation is taken inside the same transaction as the check, so the
+    database — not a race — decides who gets the last slot.
+
+    Rows are short-lived. Each is released on rejection, terminal failure or
+    cancellation, or converted to committed usage once the upload and its
+    stored object are both known to exist. A reconciliation sweep clears any
+    that outlive their work, so a crash between reserve and commit costs a
+    little headroom for one sweep interval rather than a permanently lost slot.
+    """
+
+    __tablename__ = "usage_reservations"
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    # The upload this reservation is for, once one exists. Null between the
+    # reservation and the insert that creates it.
+    upload_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("uploads.id", ondelete="CASCADE"), nullable=True
+    )
+    bytes_reserved: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    # UTC date the reservation counts against, so a daily window cannot be
+    # reset by a client clock.
+    usage_date: Mapped[date] = mapped_column(Date, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        Index("ix_usage_reservations_user_date", "user_id", "usage_date"),
+        Index("ix_usage_reservations_expires_at", "expires_at"),
+    )
+
+
+class UserUsage(Base, TimestampMixin):
+    """Committed usage for one persistent account on one UTC day.
+
+    Postgres is the authority. Redis handles burst rate limiting and nothing
+    durable — a Redis restart must not hand anybody a fresh daily allowance.
+
+    Only the daily counters are stored. Lifetime totals — stored bytes,
+    transaction rows, receipts — are counted from the authoritative tables at
+    check time rather than accumulated here: a stored total drifts the moment
+    anything is deleted outside the quota path, and a drifted counter locks
+    somebody out of their own account with no visible cause. Counting costs a
+    little more and cannot drift.
+    """
+
+    __tablename__ = "user_usage"
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    usage_date: Mapped[date] = mapped_column(Date, nullable=False)
+    uploads_today: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    bytes_today: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "usage_date", name="uq_user_usage_user_date"),
+    )
+
+
 class Upload(Base, TimestampMixin):
     __tablename__ = "uploads"
 

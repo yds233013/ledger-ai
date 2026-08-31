@@ -26,6 +26,13 @@ _REDACTIONS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"\beyJ[A-Za-z0-9._-]{20,}"), "[REDACTED-JWT]"),
     # API keys.
     (re.compile(r"\bsk-[A-Za-z0-9_-]{16,}"), "[REDACTED-KEY]"),
+    # Clerk identifiers. These reach the log through httpx's request line —
+    # `HTTP Request: GET https://api.clerk.com/v1/users/user_2ab...` — which no
+    # code here formats, so the log-ids-not-content convention cannot reach it.
+    # The id is replaced and the rest of the line kept: method, host, path shape
+    # and status are exactly what is needed to diagnose a failed lookup, and
+    # silencing the whole line would trade a real diagnostic for the redaction.
+    (re.compile(r"\b(user|sess|org|inv|client)_[A-Za-z0-9]{16,}"), r"\1_[REDACTED]"),
     # Connection strings with credentials.
     (
         re.compile(r"\b([a-z+]+://)[^:/\s]+:[^@/\s]+@"),
@@ -78,7 +85,16 @@ def install_redaction() -> None:
         if not _already_installed(handler):
             handler.addFilter(RedactingFilter())
 
-    for name in ("uvicorn", "uvicorn.error", "uvicorn.access", "sqlalchemy.engine"):
+    # httpx is listed explicitly because it logs an outbound request URL for
+    # every Clerk Backend API call, and those URLs carry a user id.
+    for name in (
+        "uvicorn",
+        "uvicorn.error",
+        "uvicorn.access",
+        "sqlalchemy.engine",
+        "httpx",
+        "httpcore",
+    ):
         logger = logging.getLogger(name)
         if not _already_installed(logger):
             logger.addFilter(RedactingFilter())

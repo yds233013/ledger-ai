@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import Link from 'next/link';
 import { useCallback, useState } from 'react';
 
+import { ConsentGate } from '@/components/upload/consent-gate';
 import { Dropzone } from '@/components/upload/dropzone';
 import { JobProgress } from '@/components/upload/job-progress';
 import { Badge, Card, CardHeader, EmptyState, Spinner } from '@/components/ui/primitives';
@@ -92,46 +93,58 @@ export default function UploadPage() {
         </p>
       </header>
 
-      <Card className="p-5">
-        <Dropzone onFiles={handleFiles} disabled={upload.isPending} />
+      <ConsentGate>
+        <Card className="p-5">
+          <Dropzone onFiles={handleFiles} disabled={upload.isPending} />
 
-        {upload.isPending ? (
-          <p className="mt-3 flex items-center gap-2 text-sm text-ink-muted">
-            <Spinner /> Uploading…
-          </p>
-        ) : null}
+          {upload.isPending ? (
+            <p className="mt-3 flex items-center gap-2 text-sm text-ink-muted">
+              <Spinner /> Uploading…
+            </p>
+          ) : null}
 
-        {notice ? (
-          <p
-            role="status"
-            className={`mt-3 rounded-lg border px-3 py-2 text-sm ${
-              notice.tone === 'error'
-                ? 'border-negative/30 bg-negative/5 text-negative'
-                : 'border-line bg-surface-sunken text-ink-muted'
-            }`}
-          >
-            {notice.text}
-          </p>
-        ) : null}
+          {notice ? (
+            <p
+              role="status"
+              className={`mt-3 rounded-lg border px-3 py-2 text-sm ${
+                notice.tone === 'error'
+                  ? 'border-negative/30 bg-negative/5 text-negative'
+                  : 'border-line bg-surface-sunken text-ink-muted'
+              }`}
+            >
+              {notice.text}
+            </p>
+          ) : null}
 
-        <div className="mt-5 rounded-lg border border-line bg-surface-sunken p-4">
-          <p className="text-xs font-medium text-ink">Expected CSV columns</p>
-          <p className="mt-1 text-xs leading-relaxed text-ink-muted">
-            A date column (<code className="font-mono">Date</code>,{' '}
-            <code className="font-mono">Posted Date</code>…), a description column (
-            <code className="font-mono">Description</code>,{' '}
-            <code className="font-mono">Memo</code>…), and either a signed{' '}
-            <code className="font-mono">Amount</code> column or separate{' '}
-            <code className="font-mono">Debit</code>/<code className="font-mono">Credit</code>{' '}
-            columns. Column names are matched case-insensitively.
-          </p>
-          <p className="mt-2 text-xs text-ink-faint">
-            A synthetic sample file lives at{' '}
-            <code className="font-mono">docs/samples/sample_statement_synthetic.csv</code> in the
-            repository.
-          </p>
-        </div>
-      </Card>
+          <div className="mt-5 rounded-lg border border-line bg-surface-sunken p-4">
+            <p className="text-xs font-medium text-ink">Expected CSV columns</p>
+            <p className="mt-1 text-xs leading-relaxed text-ink-muted">
+              A date column (<code className="font-mono">Date</code>,{' '}
+              <code className="font-mono">Posted Date</code>…), a description column (
+              <code className="font-mono">Description</code>,{' '}
+              <code className="font-mono">Memo</code>…), and either a signed{' '}
+              <code className="font-mono">Amount</code> column or separate{' '}
+              <code className="font-mono">Debit</code>/<code className="font-mono">Credit</code>{' '}
+              columns. Column names are matched case-insensitively.
+            </p>
+            <p className="mt-2 text-xs text-ink-faint">
+              A synthetic sample file lives at{' '}
+              <code className="font-mono">docs/samples/sample_statement_synthetic.csv</code> in the
+              repository.
+            </p>
+          </div>
+          <div className="mt-4 rounded-lg border border-line bg-surface-sunken p-4">
+            <p className="text-xs font-medium text-ink">Remove account numbers first</p>
+            <p className="mt-1 text-xs leading-relaxed text-ink-muted">
+              Ledger AI does not need a full account, card or Social Security number, and
+              refuses files that contain one. Masked values are expected and fine — a column of{' '}
+              <code className="font-mono">••••4821</code> is exactly what a bank export looks
+              like. The check is best-effort and will not catch everything, so the safest thing
+              is to look before you upload.
+            </p>
+          </div>
+        </Card>
+      </ConsentGate>
 
       <Card>
         <CardHeader

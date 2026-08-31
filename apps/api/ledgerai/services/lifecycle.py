@@ -48,6 +48,7 @@ from ..models import (
     UploadStatus,
     User,
 )
+from . import quota
 from .storage import StorageError, get_storage
 
 logger = logging.getLogger(__name__)
@@ -491,6 +492,7 @@ class RetentionReport:
     stuck_jobs_failed: int = 0
     failed_upload_files_removed: int = 0
     unconfirmed_receipts_removed: int = 0
+    reservations_swept: int = 0
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -526,6 +528,8 @@ def retention_sweep(session: Session, now: datetime | None = None) -> RetentionR
         upload = session.get(Upload, job.upload_id)
         if upload is not None:
             upload.status = UploadStatus.FAILED
+        # This job is terminal now, so whatever budget it was holding goes back.
+        quota.release_for_upload(session, job.upload_id)
     report.stuck_jobs_failed = len(stuck)
 
     # --- stored files for failed uploads ---------------------------------
@@ -560,11 +564,19 @@ def retention_sweep(session: Session, now: datetime | None = None) -> RetentionR
         delete_receipt(session, receipt)
         report.unconfirmed_receipts_removed += 1
 
+    # --- budget claims whose work never finished --------------------------
+    # A process killed between reserving and completing leaves a claim behind.
+    # Without this, that user is short a concurrent slot until it expires — and
+    # the whole point of an expiry is that something eventually collects it.
+    report.reservations_swept = quota.sweep_expired(session, now=now)
+
     session.flush()
     logger.info(
-        "Retention sweep: %d stuck job(s) failed, %d file(s) removed, %d receipt(s) removed",
+        "Retention sweep: %d stuck job(s) failed, %d file(s) removed, "
+        "%d receipt(s) removed, %d reservation(s) swept",
         report.stuck_jobs_failed,
         report.failed_upload_files_removed,
         report.unconfirmed_receipts_removed,
+        report.reservations_swept,
     )
     return report

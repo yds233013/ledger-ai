@@ -7,16 +7,18 @@ already ingested returns the original upload rather than creating a second one.
 
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import datetime
 
 from fastapi import APIRouter, File, HTTPException, Request, UploadFile, status
 from pydantic import BaseModel
+from rq import Retry
 from sqlalchemy import desc
 from sqlalchemy.exc import IntegrityError
 
 from ..config import settings
-from ..deps import CurrentUser, DbSession
+from ..deps import CurrentUser, DbSession, SyncSessionFactory
 from ..jobs.process_upload import mark_job_failed, process_upload
 from ..jobs.queue import get_queue
 from ..models import JobStage, ProcessingJob, Upload, UploadKind, UploadStatus
@@ -28,10 +30,13 @@ from ..security.validators import (
     validate_csv_structure,
     validate_size,
 )
+from ..services import quota, sensitive
 from ..services.consent import missing_consents
 from ..services.normalize import compute_content_hash
 from ..services.scoping import user_jobs, user_uploads
 from ..services.storage import StorageError, get_storage
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/uploads", tags=["uploads"])
 
@@ -65,6 +70,18 @@ class UploadOut(BaseModel):
     message: str | None = None
 
 
+def _discard_object(storage_key: str) -> None:
+    """Remove an object whose upload row did not survive.
+
+    Best effort. A failure here leaves an orphan for the retention sweep rather
+    than turning a recoverable race into an error the user sees.
+    """
+    try:
+        get_storage().delete(storage_key)
+    except StorageError:
+        logger.warning("upload.orphan_object_left", exc_info=True)
+
+
 async def _read_bounded(file: UploadFile) -> bytes:
     chunks: list[bytes] = []
     total = 0
@@ -82,6 +99,7 @@ async def create_upload(
     request: Request,
     user: CurrentUser,
     session: DbSession,
+    factory: SyncSessionFactory,
     file: UploadFile = File(...),
 ) -> UploadOut:
     # Uploads are the widest attack surface here: they consume storage, worker
@@ -113,6 +131,26 @@ async def create_upload(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
         ) from exc
+
+    # Refuse unmasked account numbers, SSNs, routing numbers and IBANs before a
+    # single byte reaches storage. Nothing has been stored or reserved yet, so
+    # rejection here needs no cleanup — which is precisely why the check lives
+    # at this point in the flow rather than after.
+    #
+    # The whole file is refused, and the response carries only category names,
+    # counts and remediation. Naming the row or column would tell whoever holds
+    # the response exactly where the sensitive data sits.
+    if kind == UploadKind.CSV:
+        findings = sensitive.scan_csv(data)
+        if findings.rejected:
+            logger.info(
+                "upload.rejected_sensitive categories=%s", ",".join(findings.categories)
+            )
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=findings.guidance(),
+                headers={"X-Rejected-Categories": ",".join(findings.categories)},
+            )
 
     content_hash = compute_content_hash(data)
 
@@ -148,9 +186,23 @@ async def create_upload(
     safe_name = sanitize_filename(original_name)
     storage_key = build_storage_key(user.id, safe_name)
 
+    # Claim budget before storing anything. The reservation commits in its own
+    # transaction, so a second request arriving now sees the claim and is
+    # refused rather than racing this one to the same last slot. Everything
+    # after this point releases it on failure.
+    try:
+        reservation = await quota.reserve_for_request(factory, user, len(data))
+    except quota.QuotaExceededError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=exc.detail,
+            headers=exc.headers(),
+        ) from exc
+
     try:
         get_storage().put(storage_key, data, content_type)
     except StorageError as exc:
+        await quota.release_for_request(factory, reservation)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="File storage is unavailable. Please try again.",
@@ -175,10 +227,16 @@ async def create_upload(
         # Lost a race against a concurrent identical upload — the constraint
         # did its job; report the existing one rather than failing.
         await session.rollback()
+        await quota.release_for_request(factory, reservation)
+        _discard_object(storage_key)
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="That file is already being processed.",
         ) from exc
+
+    # Bind the claim to the upload in this same transaction, so the row and
+    # the binding become visible together and the worker can always find it.
+    await quota.attach_in_transaction(session, reservation, upload.id)
 
     job = ProcessingJob(
         upload_id=upload.id, user_id=user.id, stage=JobStage.QUEUED, progress=0
@@ -186,13 +244,36 @@ async def create_upload(
     session.add(job)
     await session.flush()
 
-    rq_job = get_queue().enqueue(
-        process_upload,
-        str(upload.id),
-        str(job.id),
-        on_failure=mark_job_failed,
-    )
+    try:
+        rq_job = get_queue().enqueue(
+            process_upload,
+            str(upload.id),
+            str(job.id),
+            # Transient failures — a storage blip, a worker restarted mid-job —
+            # are worth one more go. `on_failure` fires only once the retries
+            # are exhausted, which is what makes it the terminal point where the
+            # held budget is handed back. A rejected file never gets here: that
+            # path returns normally so it is not retried.
+            retry=Retry(max=max(0, settings.quota_max_job_attempts - 1)),
+            on_failure=mark_job_failed,
+        )
+    except Exception as exc:  # noqa: BLE001 - the queue is a dependency, not a bug
+        # Nothing will ever process this file, so undo the whole attempt rather
+        # than leaving a row that says "processing" forever and a claim that
+        # holds a slot until it expires.
+        await session.rollback()
+        await quota.release_for_request(factory, reservation)
+        _discard_object(storage_key)
+        logger.warning("upload.enqueue_failed", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Processing is unavailable right now. Please try again.",
+        ) from exc
+
     job.rq_job_id = rq_job.id
+    # The claim stays held past this commit. It is the concurrent-job limit
+    # while the job runs, and the worker converts it to committed usage on
+    # completion or releases it on terminal failure.
     await session.commit()
 
     return UploadOut(

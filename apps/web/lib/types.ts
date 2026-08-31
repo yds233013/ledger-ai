@@ -437,3 +437,43 @@ export interface RunSummary {
   created_at: string;
   cached: boolean;
 }
+
+/**
+ * Which documents this account has accepted, and at which version.
+ *
+ * Versions rather than booleans: "accepted the terms" says nothing useful
+ * without saying *which* terms. When a version changes, the previously accepted
+ * one no longer matches the required one and the account is asked again.
+ */
+export interface ConsentState {
+  /** Consent type -> the version currently required. */
+  required: Record<string, string>;
+  /** Consent type -> the latest version this account accepted. */
+  accepted: Record<string, string>;
+  /** Prerequisites not yet accepted at the current version. */
+  missing: string[];
+}
+
+/**
+ * This account's own consumption against each private-beta budget.
+ *
+ * `applies` is false for demo accounts, which are bounded by their 24-hour
+ * expiry instead. Every number describes the requesting account only.
+ */
+export interface Usage {
+  applies: boolean;
+  resets_at: string | null;
+  uploads_today: number;
+  uploads_per_day: number;
+  bytes_today: number;
+  upload_bytes_per_day: number;
+  stored_bytes: number;
+  stored_bytes_limit: number;
+  transaction_rows: number;
+  transaction_rows_limit: number;
+  receipts: number;
+  receipts_limit: number;
+  jobs_in_flight: number;
+  concurrent_jobs_limit: number;
+  max_upload_bytes: number;
+}

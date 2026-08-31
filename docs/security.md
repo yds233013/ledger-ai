@@ -122,6 +122,91 @@ placeholders are committed. `AUTH_SECRET` must be identical in the repo-root
 | EXIF | Images are re-encoded to grayscale PNG before OCR, which strips EXIF — receipt photos routinely carry GPS coordinates. |
 | Logging | No raw OCR text, extracted financial fields, storage keys or tokens reach the logs. Receipt logging carries ids, page counts and status only, asserted by test. A redaction filter scrubs bearer tokens, API keys, credentials in connection strings and `?search=` query strings as a second layer, and request access logging is off in production because this API's query strings carry merchant names. |
 
+## Durable quotas
+
+Rate limits are about bursts and live in Redis. Quotas are about totals, apply
+only to persistent invited accounts, and live in Postgres — a Redis restart must
+never hand somebody a fresh daily allowance.
+
+| Budget | Private-beta default | Reset |
+|---|---|---|
+| Single file | 10 MB | — |
+| Uploads | 25 | daily, midnight UTC |
+| Uploaded bytes | 50 MB | daily, midnight UTC |
+| Stored objects | 250 MB | — |
+| Transaction rows | 25,000 | — |
+| Receipts | 500 | — |
+| Files processing at once | 3 | — |
+| Job attempts before terminal failure | 3 | — |
+
+Every value is a validated setting, not a constant. They are the limits of a
+beta on rented hardware, not a product decision about what anybody should be
+allowed to keep. Demo accounts are exempt: they are bounded by a 24-hour expiry
+and the existing rate limits, and a durable daily counter for an account that
+deletes itself daily would be counting nothing.
+
+### Reservations
+
+Counting committed rows cannot enforce a limit on its own: between "you are
+under it" and the insert that puts you over it, a concurrent request passes the
+same check. So the check and the claim happen in one locked statement, and two
+simultaneous uploads competing for the last slot are resolved by the database
+rather than by timing.
+
+A claim is taken when an upload is accepted and held for as long as its job runs
+— that hold *is* the concurrency limit. The worker converts it to committed
+usage when the upload completes, and releases it on terminal failure, rejection,
+cancellation and cleanup. A process that dies in between leaves a row with an
+expiry, so a crash costs a little headroom for one sweep interval rather than a
+slot lost until midnight.
+
+Lifetime totals — stored bytes, rows, receipts — are **counted** from the
+authoritative tables at check time rather than accumulated. An accumulated total
+drifts the moment anything is deleted outside the quota path, and a drifted
+counter locks somebody out of their own account with no visible cause. An
+idempotent reconciliation path rebuilds the daily counters from the uploads that
+actually exist; it reads only the database and never anything a user sent.
+
+Deleting a file frees stored bytes, rows and receipts immediately, because those
+are counted. It does **not** refund the day's upload count — that is a record of
+what was sent today, and refunding it would make the daily limit bypassable by
+uploading, deleting and uploading again.
+
+## Unmasked identifiers
+
+The upload consent asks people to remove or mask full account numbers and
+promises Ledger AI *tries* to catch them. This is that attempt, and it is
+deliberately best-effort: a hand-typed account number with no checksum passes.
+
+**Checksums, not shapes.** Every rejection class is validated arithmetically —
+Luhn for card numbers, the ABA weighted checksum for routing numbers, mod-97 for
+IBANs, and never-issued ranges for US Social Security numbers. Shape alone would
+reject order numbers, invoice references and confirmation codes constantly, and
+a detector that cries wolf is one people learn to route around.
+
+**A sensitive header is a signal, not a verdict.** A column called "Account
+Number" is exactly what a real bank export contains, and its values are almost
+always masked. A header only raises the scrutiny applied to that column's
+values; rejection still requires an unmasked, checksum-valid value. Two classes
+— routing numbers and undashed SSNs — fire *only* under such a column, because
+about one nine-digit value in ten satisfies the ABA checksum by chance. Amount
+and date columns are never scanned for identifiers at all.
+
+**Masked forms are expected and always allowed:** `••••4821`, `****4821`,
+`XXXX-4821`, `x4821` and a bare last-four.
+
+**Out of scope, deliberately:** passport numbers, driver's licence numbers and
+dates of birth. None has a checksum, all vary by jurisdiction, and a date of
+birth is indistinguishable from a transaction date.
+
+**Nothing about a match escapes.** A hit refuses the whole file and returns
+category names, counts and remediation text — never a value, a row number, a
+column name or an offset. A report precise enough to locate the sensitive data
+would itself describe where the sensitive data is. CSVs are scanned at intake,
+before a byte reaches storage; receipts are scanned once OCR has read them, and
+a hit purges the stored object while keeping the row so the user can see what to
+change.
+
 ## Rate limiting
 
 Redis fixed-window counters, applied per user where a user exists and per IP
@@ -256,6 +341,15 @@ goes to the logs only.
   rather than cookies, so it is not CSRF-exposed, but a cookie-based deployment
   would need one.
 - No audit log beyond `transaction_corrections`.
+- The unmasked-identifier check is best-effort and says so in the consent text.
+  It validates checksums, so an identifier that carries none — a hand-typed
+  account number, a foreign national ID — passes. It is a safety net for the
+  common mistake, not a guarantee about what a file contains.
+- Durable quotas cover persistent invited accounts only. Demo accounts are
+  bounded by their 24-hour expiry and the burst rate limits instead, so a
+  determined visitor can consume more in a day than an invited user can — at
+  the cost of a fresh demo session each time, which the rate limiter also
+  counts.
 - Uploaded files are stored unencrypted at rest in object storage (MinIO
   locally, Cloudflare R2 in production). The provider encrypts the underlying
   disk; Ledger AI adds no envelope encryption of its own, so bucket credentials

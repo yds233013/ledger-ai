@@ -31,13 +31,14 @@ from ..models import (
     UploadStatus,
 )
 from ..security.validators import ValidationError
+from ..services import quota, sensitive
 from ..services.alerts import analyze_upload
 from ..services.categorize import build_categorizer
 from ..services.csv_parser import parse_statement_csv
 from ..services.ingest import build_context, ingest_rows, resolve_account, resolve_category_ids
 from ..services.ocr import build_engine, parse_receipt
 from ..services.ocr.preprocess import load_pages, prepare_for_ocr
-from ..services.storage import get_storage
+from ..services.storage import StorageError, get_storage
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +51,19 @@ STAGE_PROGRESS: dict[JobStage, int] = {
     JobStage.ANALYZING: 85,
     JobStage.COMPLETE: 100,
 }
+
+
+class SensitiveContentError(Exception):
+    """OCR found an unmasked identifier in a receipt.
+
+    Carries the findings and nothing else — categories and counts. There is no
+    field on it that could hold the matched text, which is deliberate: an
+    exception is the single most likely thing to end up in a log line.
+    """
+
+    def __init__(self, findings: sensitive.Findings) -> None:
+        self.findings = findings
+        super().__init__("sensitive content detected")
 
 
 def _set_stage(
@@ -96,6 +110,10 @@ def mark_job_failed(job, connection, exc_type, exc_value, traceback) -> None:  #
             upload = session.get(Upload, uuid.UUID(job.args[0]))
             if upload is not None:
                 upload.status = UploadStatus.FAILED
+            # RQ calls this only once retries are exhausted, so this is the
+            # terminal point: hand the held budget back rather than leaving the
+            # user short a slot until the reservation expires.
+            quota.release_for_upload(session, uuid.UUID(job.args[0]))
     except Exception:  # noqa: BLE001 - a failing failure-handler must stay quiet
         logger.exception("Could not record job failure for %s", job.id)
 
@@ -147,6 +165,9 @@ def process_upload(upload_id: str, job_id: str) -> dict[str, int | str]:
             alerts_created = analyze_upload(session, upload.user_id, upload.id)
 
             upload.status = UploadStatus.COMPLETE
+            # The upload row, its stored object and its imported rows are all
+            # consistent now, so the held claim becomes committed usage.
+            quota.commit_by_upload(session, upload.id)
             _set_stage(
                 session,
                 job,
@@ -175,6 +196,14 @@ def process_upload(upload_id: str, job_id: str) -> dict[str, int | str]:
                 "account": account.name,
             }
 
+        except SensitiveContentError as exc:
+            # Not retryable and not the user's mistake to repeat — the file
+            # itself is the problem. Undo the upload entirely rather than
+            # leaving a rejected file's bytes in storage, and return normally so
+            # RQ does not retry a rejection.
+            session.rollback()
+            return _reject_upload(session, uuid.UUID(upload_id), uuid.UUID(job_id), exc)
+
         except Exception as exc:  # noqa: BLE001 - every failure must reach the UI
             session.rollback()
             message = str(exc) if isinstance(exc, ValidationError) else _safe_error(exc)
@@ -195,6 +224,49 @@ def process_upload(upload_id: str, job_id: str) -> dict[str, int | str]:
             raise
 
 
+def _reject_upload(
+    session: Session,
+    upload_id: uuid.UUID,
+    job_id: uuid.UUID,
+    exc: SensitiveContentError,
+) -> dict[str, int | str]:
+    """Purge a rejected upload's contents and tell the user how to fix it.
+
+    The bytes go; the row stays. Deleting the row would take the job with it
+    through the cascade, and the rejection would then look to the user like a
+    file that silently vanished — with no message saying what to change. That
+    is the same trade the retention sweep already makes for failed uploads.
+
+    A purged upload no longer counts toward stored bytes, because its contents
+    no longer exist.
+    """
+    categories = ",".join(exc.findings.categories)
+    upload = session.get(Upload, upload_id)
+    if upload is not None:
+        try:
+            get_storage().delete(upload.storage_key)
+        except StorageError:
+            logger.warning("upload.rejected_object_purge_failed", exc_info=True)
+        upload.storage_key = ""
+        upload.status = UploadStatus.FAILED
+
+    quota.release_for_upload(session, upload_id)
+
+    job = session.get(ProcessingJob, job_id)
+    if job is not None:
+        _set_stage(
+            session,
+            job,
+            JobStage.FAILED,
+            progress=100,
+            error_message=exc.findings.guidance(),
+            finished_at=datetime.now(UTC),
+        )
+    session.commit()
+    logger.info("upload.rejected_sensitive categories=%s", categories)
+    return {"rejected": categories}
+
+
 def _process_receipt(
     session: Session, job: ProcessingJob, upload: Upload, data: bytes
 ) -> dict[str, int | str]:
@@ -209,6 +281,15 @@ def _process_receipt(
 
     result = build_engine().extract(prepared)
     _set_stage(session, job, JobStage.NORMALIZING, rows_total=1)
+
+    # A receipt's contents are unknown until OCR has read them, so this is the
+    # earliest the same check the CSV path runs at intake can be applied. A hit
+    # means the file is refused outright: the stored object is purged, the
+    # upload row goes, the claim is released, and nothing extracted from it is
+    # written down — least of all the text that triggered the rejection.
+    findings = sensitive.scan_text(result.text)
+    if findings.rejected:
+        raise SensitiveContentError(findings)
 
     parsed = parse_receipt(result)
     _set_stage(session, job, JobStage.CATEGORIZING)
@@ -243,6 +324,7 @@ def _process_receipt(
     _set_stage(session, job, JobStage.ANALYZING)
 
     upload.status = UploadStatus.COMPLETE
+    quota.commit_by_upload(session, upload.id)
     _set_stage(
         session,
         job,

@@ -20,7 +20,7 @@ from ..db import SyncSessionLocal
 from ..deps import CurrentUser, DbSession, SyncSessionFactory
 from ..models import Account, Transaction, Upload
 from ..security.ratelimit import DESTRUCTIVE_LIMIT, EXPORT_LIMIT, enforce
-from ..services import consent
+from ..services import consent, quota
 from ..services.account_deletion import record_deletion_intent
 from ..services.analysis.cache import purge_user_cache
 from ..services.demo import (
@@ -275,6 +275,44 @@ async def accept_consents(
         required={t: consent.required_version(t) for t in consent.UPLOAD_PREREQUISITES},
         accepted=accepted,
         missing=await consent.missing_consents(session, user),
+    )
+
+
+class UsageOut(BaseModel):
+    """The caller's own consumption against each private-beta budget.
+
+    Safe to return in full: every number describes the requesting account and
+    nothing about anybody else. `applies` is false for demo accounts, which are
+    bounded by their 24-hour expiry and the existing rate limits instead.
+    """
+
+    applies: bool
+    resets_at: str | None = None
+    uploads_today: int = 0
+    uploads_per_day: int = 0
+    bytes_today: int = 0
+    upload_bytes_per_day: int = 0
+    stored_bytes: int = 0
+    stored_bytes_limit: int = 0
+    transaction_rows: int = 0
+    transaction_rows_limit: int = 0
+    receipts: int = 0
+    receipts_limit: int = 0
+    jobs_in_flight: int = 0
+    concurrent_jobs_limit: int = 0
+    max_upload_bytes: int = 0
+
+
+@router.get("/usage", response_model=UsageOut)
+async def get_usage(user: CurrentUser, factory: SyncSessionFactory) -> UsageOut:
+    """How much of each budget this account has used.
+
+    Shown so somebody can see a limit coming rather than discovering it as a
+    refused upload.
+    """
+    state = await quota.snapshot_for_request(factory, user)
+    return UsageOut.model_validate(
+        {**state, "max_upload_bytes": app_settings.max_upload_bytes}
     )
 
 

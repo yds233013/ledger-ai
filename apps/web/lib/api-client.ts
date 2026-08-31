@@ -9,6 +9,7 @@ import type {
   AlertList,
   Capabilities,
   ConfirmResponse,
+  ConsentState,
   CorrectionImpact,
   DeletionResult,
   Dashboard,
@@ -22,6 +23,7 @@ import type {
   Transaction,
   TransactionUpdateResult,
   Upload,
+  Usage,
 } from './types';
 
 export const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000';
@@ -230,6 +232,17 @@ export const api = {
   analysisRuns: () => request<RunSummary[]>('/api/analysis/runs'),
 
   profile: () => request<Profile>('/api/settings/profile'),
+
+  consents: () => request<ConsentState>('/api/settings/consents'),
+
+  acceptConsents: (consentTypes: string[]) =>
+    request<ConsentState>('/api/settings/consents', {
+      method: 'POST',
+      body: JSON.stringify({ consent_types: consentTypes }),
+      headers: { 'Content-Type': 'application/json' },
+    }),
+
+  usage: () => request<Usage>('/api/settings/usage'),
 
   /* --- receipts --------------------------------------------------------- */
 

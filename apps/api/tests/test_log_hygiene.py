@@ -27,10 +27,37 @@ class TestRedaction:
             ("GET /api/transactions?search=Blue+Bottle+Coffee", "Blue+Bottle"),
             ("GET /api/transactions?merchant=Whole+Foods", "Whole+Foods"),
             ("ocr <redact>SANDBOX GROCERS TOTAL 30.36</redact>", "30.36"),
+            # httpx logs the URL of every Clerk Backend API call, and that URL
+            # carries a user id. No application code formats that line, so the
+            # log-ids-not-content convention cannot reach it.
+            (
+                'HTTP Request: GET https://api.clerk.com/v1/users/user_2abcDEFghi123JKLmno '
+                '"HTTP/1.1 200 OK"',
+                "user_2abcDEFghi123JKLmno",
+            ),
+            ("session sess_2xyzABCdefGHI9876543 revoked", "sess_2xyzABCdefGHI9876543"),
         ],
     )
     def test_sensitive_substrings_are_removed(self, raw: str, must_not_contain: str) -> None:
         assert must_not_contain not in redact(raw)
+
+    def test_redacting_a_clerk_id_keeps_the_rest_of_the_line(self) -> None:
+        """A silenced line is a lost diagnostic. Only the identifier goes."""
+        raw = (
+            'HTTP Request: GET https://api.clerk.com/v1/users/user_2abcDEFghi123JKLmno '
+            '"HTTP/1.1 404 Not Found"'
+        )
+        cleaned = redact(raw)
+        assert "api.clerk.com/v1/users/user_[REDACTED]" in cleaned
+        assert "404 Not Found" in cleaned
+
+    def test_an_ordinary_application_error_survives_untouched(self) -> None:
+        # Redacting Clerk ids must not become a way of hiding real failures.
+        safe = "clerk.jwks_unavailable attempt=2 status=503"
+        assert redact(safe) == safe
+
+    def test_a_short_word_ending_in_underscore_is_not_mangled(self) -> None:
+        assert redact("user_id=7 org_name=acme") == "user_id=7 org_name=acme"
 
     def test_safe_lines_are_untouched(self) -> None:
         """Over-redaction would make the logs useless."""

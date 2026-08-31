@@ -13,6 +13,8 @@ export const queryKeys = {
   capabilities: ['capabilities'] as const,
   analysisRuns: ['analysis-runs'] as const,
   profile: ['profile'] as const,
+  consents: ['consents'] as const,
+  usage: ['usage'] as const,
   receipts: (statusFilter?: string) => ['receipts', statusFilter ?? 'all'] as const,
   receiptsAll: ['receipts'] as const,
   receipt: (id: string) => ['receipt', id] as const,
