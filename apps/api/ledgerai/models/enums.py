@@ -13,6 +13,25 @@ from enum import StrEnum
 class UploadKind(StrEnum):
     CSV = "csv"
     IMAGE = "image"
+    # A bank statement PDF, read through its text layer. Distinct from IMAGE so
+    # a PDF receipt keeps the OCR path and its five-page cap: the two are the
+    # same file format asking for completely different treatment, and the
+    # uploader says which rather than the server guessing.
+    STATEMENT_PDF = "statement_pdf"
+
+
+class StatementImportStatus(StrEnum):
+    """Where an import has got to.
+
+    Rows are inert in every state but COMMITTED — a parsed statement is an
+    inference, and nothing derived from it reaches the ledger until a person
+    says so.
+    """
+
+    PARSING = "parsing"
+    NEEDS_REVIEW = "needs_review"
+    COMMITTED = "committed"
+    FAILED = "failed"
 
 
 class UploadStatus(StrEnum):

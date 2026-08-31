@@ -11,7 +11,7 @@ import logging
 import uuid
 from datetime import datetime
 
-from fastapi import APIRouter, File, HTTPException, Request, UploadFile, status
+from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile, status
 from pydantic import BaseModel
 from rq import Retry
 from sqlalchemy import desc
@@ -34,6 +34,8 @@ from ..services import quota, sensitive
 from ..services.consent import missing_consents
 from ..services.normalize import compute_content_hash
 from ..services.scoping import user_jobs, user_uploads
+from ..services.statements import extract_pages
+from ..services.statements.extract import EncryptedPdfError, NoTextLayerError
 from ..services.storage import StorageError, get_storage
 
 logger = logging.getLogger(__name__)
@@ -56,6 +58,14 @@ class JobOut(BaseModel):
     error_message: str | None
     started_at: datetime | None
     finished_at: datetime | None
+
+
+#: What the uploader said the file is. A PDF is a statement or a receipt
+#: depending only on this — never on a heuristic. Guessing wrong in either
+#: direction is silently destructive: a statement read as a receipt collapses a
+#: month into one row, and a receipt read as a statement finds no table at all.
+STATEMENT = "statement"
+RECEIPT = "receipt"
 
 
 class UploadOut(BaseModel):
@@ -101,6 +111,7 @@ async def create_upload(
     session: DbSession,
     factory: SyncSessionFactory,
     file: UploadFile = File(...),
+    kind_hint: str | None = Form(default=None, alias='kind'),
 ) -> UploadOut:
     # Uploads are the widest attack surface here: they consume storage, worker
     # time and OCR cycles. Budgeted per user, not per IP.
@@ -132,25 +143,60 @@ async def create_upload(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
         ) from exc
 
+    # A PDF is a statement or a receipt because the uploader said so. Asked
+    # rather than inferred: both misroutes lose data quietly.
+    statement_pages = 0
+    if content_type == "application/pdf":
+        if kind_hint not in (STATEMENT, RECEIPT):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    "Please say whether this PDF is a bank statement or a receipt "
+                    "before uploading it."
+                ),
+            )
+        if kind_hint == STATEMENT:
+            kind = UploadKind.STATEMENT_PDF
+
     # Refuse unmasked account numbers, SSNs, routing numbers and IBANs before a
     # single byte reaches storage. Nothing has been stored or reserved yet, so
     # rejection here needs no cleanup — which is precisely why the check lives
     # at this point in the flow rather than after.
     #
     # The whole file is refused, and the response carries only category names,
-    # counts and remediation. Naming the row or column would tell whoever holds
-    # the response exactly where the sensitive data sits.
+    # counts and remediation. Naming the row, column or page would tell whoever
+    # holds the response exactly where the sensitive data sits.
+    findings: sensitive.Findings | None = None
     if kind == UploadKind.CSV:
         findings = sensitive.scan_csv(data)
-        if findings.rejected:
-            logger.info(
-                "upload.rejected_sensitive categories=%s", ",".join(findings.categories)
-            )
+    elif kind == UploadKind.STATEMENT_PDF:
+        # Text extraction is fast enough to run here — under half a second for a
+        # maximal statement — so a statement carrying a full account number is
+        # refused without ever being written down.
+        try:
+            pages = extract_pages(data)
+        except (EncryptedPdfError, NoTextLayerError) as exc:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=findings.guidance(),
-                headers={"X-Rejected-Categories": ",".join(findings.categories)},
-            )
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+            ) from exc
+        except ValidationError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+            ) from exc
+        statement_pages = len(pages)
+        findings = sensitive.scan_free_text(
+            "\n".join(" ".join(w.text for w in page) for page in pages)
+        )
+
+    if findings is not None and findings.rejected:
+        logger.info(
+            "upload.rejected_sensitive categories=%s", ",".join(findings.categories)
+        )
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=findings.guidance(),
+            headers={"X-Rejected-Categories": ",".join(findings.categories)},
+        )
 
     content_hash = compute_content_hash(data)
 
@@ -191,7 +237,9 @@ async def create_upload(
     # refused rather than racing this one to the same last slot. Everything
     # after this point releases it on failure.
     try:
-        reservation = await quota.reserve_for_request(factory, user, len(data))
+        reservation = await quota.reserve_for_request(
+            factory, user, len(data), pages=statement_pages
+        )
     except quota.QuotaExceededError as exc:
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,

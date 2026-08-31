@@ -264,3 +264,73 @@ class TestBounds:
             "2026-01-05;TRANSIT;-2.75;••••4821\n"
         ).encode()
         assert not sensitive.scan_csv(data).rejected
+
+
+class TestFreeTextProximity:
+    """PDF statements carry no headers, so a nearby label supplies the context.
+
+    Only the classes that need context change behaviour. Cards, dashed SSNs and
+    IBANs are caught anywhere, exactly as they are in a CSV.
+    """
+
+    def test_a_labelled_routing_number_is_rejected(self):
+        findings = sensitive.scan_free_text("Account Number 021000021 branch 12")
+        assert Category.US_ROUTING.value in findings.categories
+
+    def test_an_unlabelled_nine_digit_run_is_left_alone(self):
+        # Roughly one nine-digit value in ten satisfies the ABA checksum by
+        # chance, and a statement is full of reference numbers.
+        assert not sensitive.scan_free_text("Reference 021000021 posted 12 Aug").rejected
+
+    def test_a_labelled_ssn_is_rejected(self):
+        findings = sensitive.scan_free_text("SSN 123456789 held on file")
+        assert Category.US_SSN.value in findings.categories
+
+    def test_a_masked_value_under_a_label_is_accepted(self):
+        # Every real statement prints its own masked account line.
+        assert not sensitive.scan_free_text("Account Number ****4821").rejected
+        assert not sensitive.scan_free_text("Account Number \u2022\u2022\u2022\u20224821").rejected
+
+    def test_a_card_number_is_caught_without_any_label(self):
+        assert sensitive.scan_free_text(f"PAYMENT {VISA_TEST_PAN} APPROVED").rejected
+
+    def test_an_iban_is_caught_without_any_label(self):
+        assert sensitive.scan_free_text(f"transfer to {VALID_IBAN}").rejected
+
+    def test_a_dashed_ssn_is_caught_without_any_label(self):
+        assert sensitive.scan_free_text("ref 123-45-6789 on file").rejected
+
+    def test_an_ordinary_statement_line_is_accepted(self):
+        text = "12 Aug SANDBOX GROCERS 0042 -42.10 1,904.55 ref 201847362"
+        assert not sensitive.scan_free_text(text).rejected
+
+    def test_a_sort_code_label_raises_scrutiny(self):
+        assert sensitive.scan_free_text("Sort code 021000021").rejected
+
+    def test_the_report_still_carries_no_values(self):
+        findings = sensitive.scan_free_text("Account Number 021000021")
+        assert "021000021" not in repr(findings.as_report())
+
+
+class TestCsvBehaviourIsUnchanged:
+    """The proximity rule is additive. These assert the CSV path did not move."""
+
+    def test_a_bare_nine_digit_reference_column_is_still_accepted(self):
+        findings = _scan("Date,Amount,Reference\n2026-01-04,-4.50,021000021\n")
+        assert not findings.rejected
+
+    def test_a_routing_header_still_rejects(self):
+        findings = _scan(f"Date,Amount,Routing Number\n2026-01-04,-4.50,{VALID_ABA}\n")
+        assert Category.US_ROUTING.value in findings.categories
+
+    def test_a_masked_bank_export_is_still_accepted(self):
+        findings = _scan(
+            "Date,Description,Amount,Account Number\n"
+            "2026-01-04,WHOLE FOODS MKT,-64.21,\u2022\u2022\u2022\u20224821\n"
+            "2026-01-05,TRANSIT,-2.75,\u2022\u2022\u2022\u20224821\n"
+            "2026-01-06,PAYROLL,2400.00,\u2022\u2022\u2022\u20224821\n"
+        )
+        assert not findings.rejected
+
+    def test_scan_text_still_ignores_a_bare_nine_digit_run(self):
+        assert not sensitive.scan_text(f"TERMINAL {VALID_ABA}").rejected

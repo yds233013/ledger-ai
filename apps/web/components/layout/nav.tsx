@@ -9,6 +9,7 @@ const LINKS = [
   { href: '/dashboard', label: 'Dashboard' },
   { href: '/upload', label: 'Upload' },
   { href: '/receipts', label: 'Receipts' },
+  { href: '/statements', label: 'Statements' },
   { href: '/transactions', label: 'Transactions' },
   { href: '/ask', label: 'Ask Ledger' },
   { href: '/settings', label: 'Settings' },

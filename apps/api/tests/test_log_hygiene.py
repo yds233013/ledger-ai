@@ -126,6 +126,33 @@ class TestCallSites:
                 for token in self.FORBIDDEN:
                     assert token not in line, f"{module.__name__} logs {token}: {line.strip()}"
 
+    def test_statement_modules_never_log_statement_content(self) -> None:
+        """A statement line in a log is a statement line in a log.
+
+        Balances are on this list as well as amounts and descriptions: a
+        balance reveals net worth, which is the most sensitive number on the
+        page and the one least likely to be thought of as content.
+        """
+        from ledgerai.services.statements import extract, layout, parse, staging, verify
+
+        forbidden = (
+            "row.description",
+            "row.amount_cents",
+            "row.balance_cents",
+            "line.text",
+            "word.text",
+            "raw_text",
+            "page_texts",
+        )
+        for module in (extract, layout, parse, staging, verify):
+            source = inspect.getsource(module)
+            for line in source.splitlines():
+                stripped = line.strip()
+                if not stripped.startswith(("logger.", "log.")):
+                    continue
+                for token in forbidden:
+                    assert token not in stripped, f"{module.__name__}: {stripped}"
+
     def test_the_receipt_log_context_carries_no_content(self) -> None:
         import uuid as _uuid
         from datetime import date as _date

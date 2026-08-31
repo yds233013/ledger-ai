@@ -31,7 +31,7 @@ from ..models import (
     UploadStatus,
 )
 from ..security.validators import ValidationError
-from ..services import quota, sensitive
+from ..services import quota, sensitive, statements
 from ..services.alerts import analyze_upload
 from ..services.categorize import build_categorizer
 from ..services.csv_parser import parse_statement_csv
@@ -134,6 +134,9 @@ def process_upload(upload_id: str, job_id: str) -> dict[str, int | str]:
 
             if upload.kind == UploadKind.IMAGE:
                 return _process_receipt(session, job, upload, data)
+
+            if upload.kind == UploadKind.STATEMENT_PDF:
+                return _process_statement(session, job, upload, data)
 
             parsed = parse_statement_csv(data)
             _set_stage(session, job, JobStage.NORMALIZING, rows_total=parsed.total_rows)
@@ -265,6 +268,80 @@ def _reject_upload(
     session.commit()
     logger.info("upload.rejected_sensitive categories=%s", categories)
     return {"rejected": categories}
+
+
+def _process_statement(
+    session: Session, job: ProcessingJob, upload: Upload, data: bytes
+) -> dict[str, int | str]:
+    """Parse a statement into rows awaiting review.
+
+    Creates no transactions. The rows are inert until somebody confirms them,
+    because a parsed statement is an inference about a document rather than a
+    record the way a CSV row is.
+
+    Logging here carries counts and ids only — never a date, a description, an
+    amount or a balance. A statement line in a log is a statement line in a log
+    no matter which module wrote it.
+    """
+    pages = statements.extract_pages(data)
+    _set_stage(session, job, JobStage.NORMALIZING, rows_total=len(pages))
+
+    parsed = statements.parse_statement(pages)
+    _set_stage(session, job, JobStage.CATEGORIZING)
+
+    # The text layer and the rendered page are independent; a crafted file can
+    # claim figures it never draws. Checked here rather than at intake because
+    # rendering is the slow part and belongs on the worker.
+    page_texts = [" ".join(w.text for w in page) for page in pages]
+    verification = statements.verify_text_layer(data, page_texts)
+    if not verification.ok:
+        raise ValidationError(
+            "The text inside that PDF does not match what the pages show, so it "
+            "has not been imported. If you exported it from your bank, please "
+            "download a fresh copy."
+        )
+
+    if not parsed.rows:
+        raise ValidationError(
+            "No transaction table could be read from that PDF. If it is a "
+            "statement, your bank's CSV export will import cleanly."
+        )
+
+    record = statements.stage(
+        session,
+        user_id=upload.user_id,
+        upload_id=upload.id,
+        parsed=parsed,
+        verification=verification,
+    )
+
+    _set_stage(session, job, JobStage.ANALYZING)
+    upload.status = UploadStatus.COMPLETE
+    quota.commit_by_upload(session, upload.id)
+    _set_stage(
+        session,
+        job,
+        JobStage.COMPLETE,
+        rows_imported=0,
+        rows_skipped=parsed.skipped_lines,
+        finished_at=datetime.now(UTC),
+    )
+
+    logger.info(
+        "Statement %s parsed: pages=%d table_pages=%d rows=%d skipped=%d chain=%s",
+        record.id,
+        parsed.page_count,
+        parsed.table_pages,
+        parsed.row_count,
+        parsed.skipped_lines,
+        parsed.balance_chain_ok,
+    )
+    return {
+        "import_id": str(record.id),
+        "rows": parsed.row_count,
+        "pages": parsed.page_count,
+        "needs_review": parsed.needs_review_count,
+    }
 
 
 def _process_receipt(

@@ -6,6 +6,7 @@ import { useCallback, useState } from 'react';
 
 import { ConsentGate } from '@/components/upload/consent-gate';
 import { Dropzone } from '@/components/upload/dropzone';
+import { KindPicker } from '@/components/upload/kind-picker';
 import { JobProgress } from '@/components/upload/job-progress';
 import { Badge, Card, CardHeader, EmptyState, Spinner } from '@/components/ui/primitives';
 import { ApiError, api } from '@/lib/api-client';
@@ -23,6 +24,9 @@ function isActive(upload: Upload): boolean {
 export default function UploadPage() {
   const queryClient = useQueryClient();
   const [notice, setNotice] = useState<{ tone: 'info' | 'error'; text: string } | null>(null);
+  // Only consulted for PDFs. The server refuses a PDF that does not declare
+  // which it is, so this is the answer rather than a hint.
+  const [pdfKind, setPdfKind] = useState<'statement' | 'receipt'>('statement');
 
   const { data: uploads = [], isLoading } = useQuery({
     queryKey: queryKeys.uploads,
@@ -43,7 +47,8 @@ export default function UploadPage() {
   });
 
   const upload = useMutation({
-    mutationFn: (file: File) => api.createUpload(file),
+    mutationFn: (file: File) =>
+      api.createUpload(file, file.type === 'application/pdf' ? pdfKind : undefined),
     onSuccess: (result) => {
       if (result.duplicate_of_existing) {
         setNotice({
@@ -51,6 +56,11 @@ export default function UploadPage() {
           text:
             result.message ??
             'That exact file was already processed, so no duplicate transactions were created.',
+        });
+      } else if (result.kind === 'statement_pdf') {
+        setNotice({
+          tone: 'info',
+          text: `${result.original_filename} is being read. It will appear below for review — nothing is imported until you confirm it.`,
         });
       } else {
         setNotice({ tone: 'info', text: `${result.original_filename} queued for processing.` });
@@ -96,6 +106,8 @@ export default function UploadPage() {
       <ConsentGate>
         <Card className="p-5">
           <Dropzone onFiles={handleFiles} disabled={upload.isPending} />
+
+          <KindPicker value={pdfKind} onChange={setPdfKind} disabled={upload.isPending} />
 
           {upload.isPending ? (
             <p className="mt-3 flex items-center gap-2 text-sm text-ink-muted">
@@ -201,6 +213,15 @@ export default function UploadPage() {
                   <div className="mt-4 max-w-md">
                     <JobProgress job={item.job} />
                   </div>
+                ) : null}
+
+                {item.kind === 'statement_pdf' && item.job?.stage === 'complete' ? (
+                  <Link
+                    href="/statements"
+                    className="mt-3 inline-block text-xs font-medium text-brand hover:underline"
+                  >
+                    Review the transactions read from this statement →
+                  </Link>
                 ) : null}
               </li>
             ))}

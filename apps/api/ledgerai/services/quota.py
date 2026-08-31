@@ -52,6 +52,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from ..config import settings
 from ..models import (
     Receipt,
+    StatementImport,
     Transaction,
     Upload,
     UsageReservation,
@@ -110,6 +111,14 @@ _MESSAGES = {
         "You have reached the private-beta limit for stored transactions."
     ),
     "receipts": "You have reached the private-beta limit for stored receipts.",
+    "statement_pages_per_day": (
+        "You have reached the private-beta limit for statement pages today. "
+        "It resets at midnight UTC."
+    ),
+    "statement_imports": (
+        "You have reached the private-beta limit for statement imports. "
+        "Confirm or discard one from the Statements page to free a slot."
+    ),
     "concurrent_jobs": (
         "You already have files being processed. Please wait for them to finish."
     ),
@@ -122,6 +131,7 @@ class Reservation:
 
     id: uuid.UUID
     bytes_reserved: int
+    pages_reserved: int = 0
 
 
 def utc_today(now: datetime | None = None) -> date:
@@ -164,8 +174,10 @@ def _lock_day_row(session: Session, user_id: uuid.UUID, day: date) -> UserUsage:
     return row
 
 
-def _reserved_totals(session: Session, user_id: uuid.UUID, day: date) -> tuple[int, int, int]:
-    """(count, bytes, live) currently held but not yet committed."""
+def _reserved_totals(
+    session: Session, user_id: uuid.UUID, day: date
+) -> tuple[int, int, int, int]:
+    """(count, bytes, live, pages) currently held but not yet committed."""
     now = datetime.now(UTC)
     rows = session.execute(
         select(UsageReservation).where(
@@ -173,7 +185,12 @@ def _reserved_totals(session: Session, user_id: uuid.UUID, day: date) -> tuple[i
         )
     ).scalars().all()
     today = [r for r in rows if r.usage_date == day]
-    return len(today), sum(r.bytes_reserved for r in today), len(rows)
+    return (
+        len(today),
+        sum(r.bytes_reserved for r in today),
+        len(rows),
+        sum(r.pages_reserved for r in today),
+    )
 
 
 def _committed_counts(session: Session, user_id: uuid.UUID) -> tuple[int, int, int]:
@@ -195,11 +212,26 @@ def _committed_counts(session: Session, user_id: uuid.UUID) -> tuple[int, int, i
     return int(stored), int(txns), int(receipts)
 
 
+def _statement_pages_today(session: Session, user_id: uuid.UUID, day: date) -> int:
+    """Statement pages already committed today, counted rather than accumulated."""
+    start = datetime.combine(day, datetime.min.time(), tzinfo=UTC)
+    return int(
+        session.scalar(
+            select(func.coalesce(func.sum(StatementImport.page_count), 0)).where(
+                StatementImport.user_id == user_id,
+                StatementImport.created_at >= start,
+            )
+        )
+        or 0
+    )
+
+
 def reserve_upload(
     session: Session,
     user_id: uuid.UUID,
     size_bytes: int,
     *,
+    pages: int = 0,
     now: datetime | None = None,
 ) -> Reservation:
     """Claim budget for one upload, or raise QuotaExceededError.
@@ -213,7 +245,7 @@ def reserve_upload(
     reset = next_utc_midnight(moment)
 
     row = _lock_day_row(session, user_id, day)
-    held_count, held_bytes, held_live = _reserved_totals(session, user_id, day)
+    held_count, held_bytes, held_live, held_pages = _reserved_totals(session, user_id, day)
     stored, txns, receipts = _committed_counts(session, user_id)
 
     def refuse(quota: str, limit: int, used: int, resets: datetime | None) -> None:
@@ -234,18 +266,43 @@ def reserve_upload(
     if receipts >= settings.quota_receipts:
         refuse("receipts", settings.quota_receipts, receipts, None)
 
+    if pages:
+        # Pages are the real cost of a statement: a long one is a small file
+        # that occupies the single worker for minutes. Budgeting bytes alone
+        # would let one account starve everybody else with a trickle of data.
+        pages_today = _statement_pages_today(session, user_id, day) + held_pages
+        if pages_today + pages > settings.quota_statement_pages_per_day:
+            refuse(
+                "statement_pages_per_day",
+                settings.quota_statement_pages_per_day,
+                pages_today,
+                reset,
+            )
+        open_imports = session.scalar(
+            select(func.count()).select_from(StatementImport).where(
+                StatementImport.user_id == user_id
+            )
+        ) or 0
+        if open_imports >= settings.quota_statement_imports:
+            refuse(
+                "statement_imports", settings.quota_statement_imports, open_imports, None
+            )
+
     reservation = UsageReservation(
         id=uuid.uuid4(),
         user_id=user_id,
         upload_id=None,
         bytes_reserved=size_bytes,
+        pages_reserved=pages,
         usage_date=day,
         expires_at=moment + RESERVATION_TTL,
     )
     session.add(reservation)
     session.flush()
-    logger.info("quota.reserved bytes=%d", size_bytes)
-    return Reservation(id=reservation.id, bytes_reserved=size_bytes)
+    logger.info("quota.reserved bytes=%d pages=%d", size_bytes, pages)
+    return Reservation(
+        id=reservation.id, bytes_reserved=size_bytes, pages_reserved=pages
+    )
 
 
 def attach_upload(session: Session, reservation: Reservation, upload_id: uuid.UUID) -> None:
@@ -325,7 +382,7 @@ def snapshot(
         select(UserUsage).where(UserUsage.user_id == user_id, UserUsage.usage_date == day)
     ).scalar_one_or_none()
     stored, txns, receipts = _committed_counts(session, user_id)
-    held_count, held_bytes, held_live = _reserved_totals(session, user_id, day)
+    held_count, held_bytes, held_live, held_pages = _reserved_totals(session, user_id, day)
 
     return {
         "resets_at": next_utc_midnight(moment).isoformat(),
@@ -341,6 +398,8 @@ def snapshot(
         "receipts_limit": settings.quota_receipts,
         "jobs_in_flight": held_live,
         "concurrent_jobs_limit": settings.quota_concurrent_jobs,
+        "statement_pages_today": _statement_pages_today(session, user_id, day) + held_pages,
+        "statement_pages_per_day": settings.quota_statement_pages_per_day,
     }
 
 
@@ -386,7 +445,7 @@ def reconcile(
 
 
 async def reserve_for_request(
-    factory: sessionmaker[Session], user: User, size_bytes: int
+    factory: sessionmaker[Session], user: User, size_bytes: int, *, pages: int = 0
 ) -> Reservation | None:
     """Reserve budget for an upload. None when quotas do not apply."""
     if not applies_to(user):
@@ -395,7 +454,7 @@ async def reserve_for_request(
 
     def _run() -> Reservation:
         with factory() as sync_session:
-            reservation = reserve_upload(sync_session, user_id, size_bytes)
+            reservation = reserve_upload(sync_session, user_id, size_bytes, pages=pages)
             sync_session.commit()
             return reservation
 

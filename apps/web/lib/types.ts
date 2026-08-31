@@ -477,3 +477,47 @@ export interface Usage {
   concurrent_jobs_limit: number;
   max_upload_bytes: number;
 }
+
+/** One transaction read out of a statement PDF, awaiting confirmation. */
+export interface StatementRow {
+  id: string;
+  source_page: number;
+  posted_date: string;
+  description: string;
+  amount_cents: number;
+  balance_cents: number | null;
+  direction: 'debit' | 'credit';
+  confidence: number;
+  flags: string[];
+  excluded: boolean;
+  edited: boolean;
+  duplicate_of_existing: boolean;
+}
+
+/**
+ * A parsed statement waiting for review.
+ *
+ * Nothing here is in the ledger. A statement PDF carries no machine-readable
+ * table, so every row is an inference until someone confirms it — which is why
+ * this is a separate thing from a transaction rather than a flag on one.
+ */
+export interface StatementImport {
+  id: string;
+  status: 'parsing' | 'needs_review' | 'committed' | 'failed';
+  page_count: number;
+  table_pages: number;
+  skipped_lines: number;
+  period_start: string | null;
+  period_end: string | null;
+  currency: string | null;
+  balance_chain_checked: boolean;
+  balance_chain_ok: boolean;
+  verified_pages: number;
+  verified_mismatches: number;
+  notes: string[];
+  expires_at: string;
+  committed_at: string | null;
+  row_count: number;
+  rows?: StatementRow[];
+  message?: string | null;
+}

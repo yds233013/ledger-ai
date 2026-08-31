@@ -42,6 +42,9 @@ from ..models import (
     ProcessingJob,
     Receipt,
     ReceiptStatus,
+    StatementImport,
+    StatementImportRow,
+    StatementImportStatus,
     Transaction,
     TransactionCorrection,
     Upload,
@@ -49,6 +52,7 @@ from ..models import (
     User,
 )
 from . import quota
+from .statements.staging import purge_original
 from .storage import StorageError, get_storage
 
 logger = logging.getLogger(__name__)
@@ -78,6 +82,11 @@ DATA_ONLY_MODELS: tuple[UserOwnedModel, ...] = (
     AnalysisRun,
     TransactionCorrection,
     Receipt,
+    # Staged rows before the import that owns them, and both before the upload:
+    # a statement awaiting review is data the user asked to delete, and leaving
+    # it behind would mean "delete my data" quietly kept a bank statement.
+    StatementImportRow,
+    StatementImport,
     Transaction,
     ProcessingJob,
     Upload,
@@ -95,6 +104,8 @@ TABLE_LABELS: dict[str, str] = {
     "analysis_runs": "saved Ask Ledger analyses",
     "transaction_corrections": "manual corrections",
     "receipts": "receipts",
+    "statement_import_rows": "rows read from statements awaiting review",
+    "statement_imports": "statement imports awaiting review",
     "transactions": "transactions",
     "processing_jobs": "processing jobs",
     "uploads": "uploaded files",
@@ -141,6 +152,8 @@ type UserOwnedModel = (
     | type[ProcessingJob]
     | type[Category]
     | type[Account]
+    | type[StatementImport]
+    | type[StatementImportRow]
 )
 
 
@@ -492,6 +505,7 @@ class RetentionReport:
     stuck_jobs_failed: int = 0
     failed_upload_files_removed: int = 0
     unconfirmed_receipts_removed: int = 0
+    statement_imports_expired: int = 0
     reservations_swept: int = 0
 
     def as_dict(self) -> dict:
@@ -564,6 +578,22 @@ def retention_sweep(session: Session, now: datetime | None = None) -> RetentionR
         delete_receipt(session, receipt)
         report.unconfirmed_receipts_removed += 1
 
+    # --- statement imports nobody came back to ----------------------------
+    # The rows are one thing; the original PDF in object storage is the reason
+    # this window is short. An unconfirmed statement is purged entire rather
+    # than aged like a receipt, because it is a far more sensitive thing to
+    # leave lying around.
+    expired = session.execute(
+        select(StatementImport).where(
+            StatementImport.status != StatementImportStatus.COMMITTED,
+            StatementImport.expires_at <= now,
+        )
+    ).scalars().all()
+    for record in expired:
+        purge_original(session, record)
+        session.delete(record)
+        report.statement_imports_expired += 1
+
     # --- budget claims whose work never finished --------------------------
     # A process killed between reserving and completing leaves a claim behind.
     # Without this, that user is short a concurrent slot until it expires — and
@@ -573,10 +603,12 @@ def retention_sweep(session: Session, now: datetime | None = None) -> RetentionR
     session.flush()
     logger.info(
         "Retention sweep: %d stuck job(s) failed, %d file(s) removed, "
-        "%d receipt(s) removed, %d reservation(s) swept",
+        "%d receipt(s) removed, %d statement import(s) expired, "
+        "%d reservation(s) swept",
         report.stuck_jobs_failed,
         report.failed_upload_files_removed,
         report.unconfirmed_receipts_removed,
+        report.statement_imports_expired,
         report.reservations_swept,
     )
     return report

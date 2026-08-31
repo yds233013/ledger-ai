@@ -15,6 +15,8 @@ export const queryKeys = {
   profile: ['profile'] as const,
   consents: ['consents'] as const,
   usage: ['usage'] as const,
+  statementImports: ['statement-imports'] as const,
+  statementImport: (id: string) => ['statement-import', id] as const,
   receipts: (statusFilter?: string) => ['receipts', statusFilter ?? 'all'] as const,
   receiptsAll: ['receipts'] as const,
   receipt: (id: string) => ['receipt', id] as const,

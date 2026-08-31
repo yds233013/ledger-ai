@@ -75,6 +75,11 @@ known merchant is categorized at confidence 1.00 and appears only in the second.
 
 ### Uploads and receipts
 
+`POST /api/uploads` takes an optional `kind` form field. It is **required for
+PDFs** (`statement` or `receipt`) and ignored for CSVs: a statement and a
+receipt are the same format wanting different treatment, and guessing wrong
+loses data silently in both directions.
+
 | Method | Path | Notes |
 |---|---|---|
 | `POST` | `/api/uploads` | CSV or image. Identical bytes return `status: duplicate` and create nothing. |
@@ -111,6 +116,11 @@ verbatim).
 | `GET` | `/api/alerts` | Filter by status. Carries the standing "not fraud detection" disclaimer. |
 | `PATCH` | `/api/alerts/{id}` | Dismiss or resolve. |
 | `GET` | `/api/settings/profile` | Profile, capability status, AI disclosure, demo expiry. |
+| `GET` | `/api/statements` | Statement PDF imports awaiting review. |
+| `GET` | `/api/statements/{id}` | Parsed rows with confidence, flags and cross-source duplicate marks. |
+| `PATCH` | `/api/statements/{id}/rows/{row_id}` | Correct or exclude one row before importing. |
+| `POST` | `/api/statements/{id}/confirm` | Create transactions from the accepted rows. Atomic, idempotent, purges the original PDF. |
+| `DELETE` | `/api/statements/{id}` | Discard the import and its stored file now. |
 | `GET` | `/api/settings/consents` | Which documents are required, which are accepted, and at what version. |
 | `POST` | `/api/settings/consents` | Record acceptance of one or more documents at their current version. |
 | `GET` | `/api/settings/usage` | This account's own consumption against each private-beta budget. `applies: false` for demo accounts. |

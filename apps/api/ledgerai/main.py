@@ -20,6 +20,7 @@ from .routers import (
     auth,
     dashboard,
     receipts,
+    statements,
     transactions,
     uploads,
     webhooks,
@@ -305,5 +306,6 @@ app.include_router(transactions.router)
 app.include_router(dashboard.router)
 app.include_router(analysis.router)
 app.include_router(receipts.router)
+app.include_router(statements.router)
 app.include_router(alerts.router)
 app.include_router(settings_router.router)

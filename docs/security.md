@@ -137,6 +137,9 @@ never hand somebody a fresh daily allowance.
 | Transaction rows | 25,000 | — |
 | Receipts | 500 | — |
 | Files processing at once | 3 | — |
+| Statement pages | 120 | daily, midnight UTC |
+| Statement imports awaiting review | 60 | — |
+| Pages in one statement | 40 | — |
 | Job attempts before terminal failure | 3 | — |
 
 Every value is a validated setting, not a constant. They are the limits of a
@@ -206,6 +209,77 @@ would itself describe where the sensitive data is. CSVs are scanned at intake,
 before a byte reaches storage; receipts are scanned once OCR has read them, and
 a hit purges the stored object while keeping the row so the user can see what to
 change.
+
+## Statement PDF import
+
+Text layer only. A statement produced by a bank is a generated document whose
+exact characters and positions are already in the file; rasterising it to run
+OCR throws that away and reintroduces errors the original never had. A scanned
+statement is refused with a message pointing at the bank's CSV export rather
+than imported at a quality nobody can check.
+
+**No new parser.** Positional extraction goes through the `pypdfium2` already
+present for rendering receipt PDFs. Camelot, Ghostscript, pdfplumber, pdfminer
+and any external document service are deliberately excluded: every additional
+parser is more attack surface aimed at the most sensitive file the product
+handles, and Ghostscript in particular is a perennial source of RCE advisories.
+
+**Nothing is inferred about intent.** A PDF is a statement or a receipt because
+the uploader said so. Receipt PDFs keep the existing OCR path and their
+five-page cap unchanged.
+
+**Nothing is committed without review.** Parsed rows are inert until a person
+confirms them. Where a statement prints a running balance, consecutive deltas
+must equal the parsed amounts — a mis-read digit breaks the chain, which pins
+the affected rows and drops their confidence rather than importing them
+quietly. A row the parser doubted stays flagged after import.
+
+**Fails closed.** Ambiguous columns yield no rows; a line that does not match
+its page's own template is counted as skipped, never guessed at; a first
+unsigned amount with no earlier balance to compare against is flagged rather
+than assumed.
+
+### Text-layer tampering, and the limits of the check
+
+A PDF's text layer and its rendered appearance are independent, so a file can
+claim figures it never draws — inflated amounts, or whole rows hidden in
+invisible render mode. A sample of pages is rendered and OCR'd, and any money
+the text layer asserts whose digits appear nowhere on the rendered page refuses
+the file.
+
+What it does not catch, stated plainly: it samples pages rather than rendering
+all forty, so a discrepancy on an unsampled page of a long statement can pass;
+it compares the set of money tokens, so a transposition that preserves every
+amount while moving it between rows is invisible to it; and it cannot see a
+description altered without touching a number. It guards against tampering that
+changes the money. It is not a proof of authenticity, which is part of why the
+review step exists.
+
+### What is kept, and for how long
+
+The extracted text is never stored — not in PostgreSQL, not in logs, not in job
+results or error messages. Receipts keep `raw_text` because a receipt is a page;
+the same column for a statement would be a verbatim copy of a bank statement in
+the primary database and in every backup. Only normalised rows and provenance
+survive parsing.
+
+The original PDF is temporary. It is purged on confirmation, on discard, on
+parse failure, and automatically after 72 hours if nobody comes back — ten times
+shorter than the unconfirmed-receipt window, because a statement is a far more
+sensitive thing to leave lying around.
+
+### Identifier screening in free text
+
+A CSV says which column a value sits in; a PDF says nothing, and statements
+print `Account Number 12345678901` as running text. The equivalent signal is
+proximity: a sensitive label shortly before a candidate does the job a column
+header does. Rejection still requires an unmasked, checksum-valid value, and
+masked forms stay allowed because every real statement prints its own. The rule
+is additive — CSV behaviour is unchanged and asserted so by test.
+
+Screening runs at intake, before any byte reaches storage: extraction of a
+maximal forty-page statement takes under half a second, so a statement carrying
+a full account number is refused without ever being written down.
 
 ## Rate limiting
 

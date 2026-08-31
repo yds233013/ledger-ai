@@ -20,6 +20,8 @@ import type {
   ReceiptDetail,
   ReceiptSummary,
   RunSummary,
+  StatementImport,
+  StatementRow,
   Transaction,
   TransactionUpdateResult,
   Upload,
@@ -221,11 +223,47 @@ export const api = {
   uploadJob: (uploadId: string) =>
     request<Upload['job']>(`/api/uploads/${uploadId}/job`),
 
-  createUpload: async (file: File): Promise<Upload> => {
+  /**
+   * `kind` is required for PDFs and ignored for CSVs. The server refuses a PDF
+   * that does not say which it is: guessing wrong loses data in both
+   * directions — a statement read as a receipt collapses a month into one row.
+   */
+  createUpload: async (file: File, kind?: 'statement' | 'receipt'): Promise<Upload> => {
     const form = new FormData();
     form.append('file', file);
+    if (kind) form.append('kind', kind);
     return request<Upload>('/api/uploads', { method: 'POST', body: form });
   },
+
+  statementImports: () => request<StatementImport[]>('/api/statements'),
+
+  statementImport: (id: string) => request<StatementImport>(`/api/statements/${id}`),
+
+  updateStatementRow: (
+    importId: string,
+    rowId: string,
+    body: Partial<{
+      posted_date: string;
+      description: string;
+      amount_cents: number;
+      excluded: boolean;
+    }>,
+  ) =>
+    request<StatementRow>(`/api/statements/${importId}/rows/${rowId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+      headers: { 'Content-Type': 'application/json' },
+    }),
+
+  confirmStatementImport: (id: string, accountId?: string) =>
+    request<StatementImport>(`/api/statements/${id}/confirm`, {
+      method: 'POST',
+      body: JSON.stringify({ account_id: accountId ?? null }),
+      headers: { 'Content-Type': 'application/json' },
+    }),
+
+  discardStatementImport: (id: string) =>
+    request<void>(`/api/statements/${id}`, { method: 'DELETE' }),
 
   capabilities: () => request<Capabilities>('/api/analysis/capabilities'),
 

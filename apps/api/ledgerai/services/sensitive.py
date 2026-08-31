@@ -351,3 +351,68 @@ def scan_csv(data: bytes, *, max_cells: int = 200_000) -> Findings:
     except StopIteration:
         return Findings()
     return scan_rows(headers, reader, max_cells=max_cells)
+
+
+# ---------------------------------------------------------------------------
+# Free text (statement PDFs)
+# ---------------------------------------------------------------------------
+#
+# A CSV says which column a value sits in, and that header is what raises
+# scrutiny on an otherwise ambiguous nine digits. A PDF says nothing: a
+# statement prints "Account Number 12345678901" as running text with no header
+# anywhere on the page.
+#
+# The equivalent signal in free text is proximity. A sensitive *label* shortly
+# before a candidate does the job a column header does — and only that. The
+# rejection still requires an unmasked, checksum-valid value, exactly as it does
+# for CSV, and nothing below is reachable from the CSV path.
+
+# How far back from a candidate a label still counts as labelling it. Long
+# enough for "Account number (sort code 00-00-00): 12345678901", short enough
+# that an "Account summary" heading at the top of a page does not lend its
+# scrutiny to every number below it.
+LABEL_WINDOW = 48
+
+_LABEL = re.compile(
+    r"(?:account\s*(?:number|no\.?|#)|a/c\s*(?:number|no\.?)|sort\s*code|routing"
+    r"|aba|iban|ssn|social\s*security|tax\s*id|national\s*insurance"
+    r"|card\s*(?:number|no\.?))",
+    re.IGNORECASE,
+)
+
+
+def _labelled(text: str, start: int) -> bool:
+    """Whether a sensitive label appears just before this position."""
+    window = text[max(0, start - LABEL_WINDOW) : start]
+    return bool(_LABEL.search(window))
+
+
+def scan_free_text(text: str, *, max_chars: int = 500_000) -> Findings:
+    """Scan statement text, letting a nearby label raise scrutiny.
+
+    Self-standing classes — Luhn-valid cards, dashed SSNs, valid IBANs — are
+    caught anywhere, exactly as `scan_text` catches them. The classes that need
+    context — routing numbers and undashed SSNs — fire only where a label puts
+    them in context, because roughly one nine-digit value in ten satisfies the
+    ABA checksum by chance and a statement is full of reference numbers.
+    """
+    findings = Findings()
+    body = text[:max_chars]
+
+    # Context-free classes: same rules as everywhere else.
+    _scan_value(body, findings, sensitive_column=False)
+
+    # Context-dependent classes, only where a label supplies the context.
+    for match in _DIGIT_RUN.finditer(body):
+        raw = match.group()
+        if is_masked(raw) or not _labelled(body, match.start()):
+            continue
+        digits = _digits(raw)
+        if len(digits) != 9:
+            continue
+        if aba_valid(digits):
+            findings.add(Category.US_ROUTING)
+        elif ssn_plausible(digits):
+            findings.add(Category.US_SSN)
+
+    return findings

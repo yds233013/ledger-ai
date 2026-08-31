@@ -14,7 +14,7 @@ tuple's contents, so they keep holding when a table is added later.
 from __future__ import annotations
 
 import uuid
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 from sqlalchemy import func, select
@@ -34,6 +34,9 @@ from ledgerai.models import (
     ProcessingJob,
     Receipt,
     ReceiptStatus,
+    StatementImport,
+    StatementImportRow,
+    StatementImportStatus,
     TransactionCorrection,
     Upload,
     UploadKind,
@@ -101,6 +104,36 @@ def populated(sync_db: Session, demo_data: dict) -> dict:
             color="#8855ff", icon="tag", is_system=False, sort_order=500,
         ),
     ])
+    sync_db.flush()
+
+    # A statement awaiting review. Its rows hold dates, descriptions and
+    # amounts read out of a bank statement, so "delete my data" leaving them
+    # behind would mean the promise quietly excluded the most sensitive thing
+    # in the account.
+    statement_import = StatementImport(
+        user_id=user.id,
+        upload_id=upload.id,
+        status=StatementImportStatus.NEEDS_REVIEW,
+        page_count=1,
+        expires_at=datetime.now(UTC) + timedelta(hours=72),
+        notes={},
+    )
+    sync_db.add(statement_import)
+    sync_db.flush()
+    sync_db.add(
+        StatementImportRow(
+            import_id=statement_import.id,
+            user_id=user.id,
+            source_page=0,
+            source_line=0,
+            posted_date=date(2026, 8, 12),
+            description="SANDBOX GROCERS 0042",
+            amount_cents=-4210,
+            balance_cents=190455,
+            confidence=1,
+            notes={"flags": []},
+        )
+    )
     sync_db.commit()
     return {"user": user, "transaction": transaction}
 

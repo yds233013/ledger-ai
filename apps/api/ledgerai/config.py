@@ -115,6 +115,23 @@ class Settings(BaseSettings):
     quota_concurrent_jobs: int = 3
     quota_max_job_attempts: int = 3
 
+    # --- Statement PDF import -----------------------------------------------
+    # Pages, not bytes, are the cost driver: a long statement is a small file
+    # that keeps the single worker busy. Receipts keep their own five-page cap
+    # in the OCR path and are unaffected by anything here.
+    max_statement_pages: int = 40
+    quota_statement_pages_per_day: int = 120
+    quota_statement_imports: int = 60
+    # How long an unconfirmed import — original PDF, renderings and staged rows
+    # — survives before it is purged. Ten times shorter than the unconfirmed
+    # receipt window, because a statement is a far more sensitive thing to leave
+    # lying around, and still long enough to come back to over a weekend.
+    statement_review_hours: int = 72
+    # A row is pre-ticked for import only at or above this confidence.
+    statement_confidence_threshold: float = 0.80
+    # Pages sampled for the text-layer/render cross-check.
+    statement_verify_sample_pages: int = 3
+
     # --- AI -----------------------------------------------------------------
     # Phase 1 ships the deterministic engine only. These exist so the Phase 2
     # LLM planner/categorizer/narrator can be switched on without refactoring.
@@ -245,10 +262,23 @@ class Settings(BaseSettings):
             "QUOTA_RECEIPTS": self.quota_receipts,
             "QUOTA_CONCURRENT_JOBS": self.quota_concurrent_jobs,
             "QUOTA_MAX_JOB_ATTEMPTS": self.quota_max_job_attempts,
+            "MAX_STATEMENT_PAGES": self.max_statement_pages,
+            "QUOTA_STATEMENT_PAGES_PER_DAY": self.quota_statement_pages_per_day,
+            "QUOTA_STATEMENT_IMPORTS": self.quota_statement_imports,
+            "STATEMENT_REVIEW_HOURS": self.statement_review_hours,
+            "STATEMENT_VERIFY_SAMPLE_PAGES": self.statement_verify_sample_pages,
         }
         for name, value in positives.items():
             if value <= 0:
                 raise ValueError(f"{name} must be greater than zero")
+
+        if not 0.0 < self.statement_confidence_threshold <= 1.0:
+            raise ValueError("STATEMENT_CONFIDENCE_THRESHOLD must be within (0, 1]")
+
+        if self.quota_statement_pages_per_day < self.max_statement_pages:
+            raise ValueError(
+                "QUOTA_STATEMENT_PAGES_PER_DAY must admit at least one full statement"
+            )
 
         if self.quota_upload_bytes_per_day < self.max_upload_bytes:
             raise ValueError(

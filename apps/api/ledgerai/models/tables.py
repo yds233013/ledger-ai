@@ -49,6 +49,7 @@ from .enums import (
     PlannerKind,
     ReceiptLinkMode,
     ReceiptStatus,
+    StatementImportStatus,
     StepStatus,
     UploadKind,
     UploadStatus,
@@ -290,6 +291,9 @@ class UsageReservation(Base, TimestampMixin):
         ForeignKey("uploads.id", ondelete="CASCADE"), nullable=True
     )
     bytes_reserved: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    # Statement PDFs cost pages, not bytes: a long statement is a small file
+    # that keeps the single worker busy for minutes. Zero for everything else.
+    pages_reserved: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     # UTC date the reservation counts against, so a daily window cannot be
     # reset by a client clock.
     usage_date: Mapped[date] = mapped_column(Date, nullable=False)
@@ -537,6 +541,116 @@ class Receipt(Base, TimestampMixin):
         Index("ix_receipts_user_status", "user_id", "status"),
         CheckConstraint(
             "ocr_confidence >= 0 AND ocr_confidence <= 1", name="ck_receipts_conf_range"
+        ),
+    )
+
+
+class StatementImport(Base, TimestampMixin):
+    """One statement PDF, parsed and awaiting review.
+
+    The original file and everything derived from it are temporary. `expires_at`
+    is the promise: unconfirmed, the whole import — rows, renderings and the PDF
+    in object storage — is purged automatically. A statement is the most
+    sensitive artefact this product handles, so it is not kept on the chance it
+    might be useful later.
+
+    The extracted text is deliberately absent. Receipts keep `raw_text` because
+    a receipt is a page; the same column here would be a verbatim second copy of
+    a bank statement sitting in the primary database and in every backup. Only
+    normalised rows and provenance survive parsing.
+    """
+
+    __tablename__ = "statement_imports"
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    upload_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("uploads.id", ondelete="CASCADE"), nullable=False, unique=True
+    )
+    # Chosen at confirmation, not at parse time: the user says where these
+    # transactions belong.
+    account_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("accounts.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    status: Mapped[StatementImportStatus] = mapped_column(
+        String(16), default=StatementImportStatus.PARSING, nullable=False
+    )
+
+    page_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    table_pages: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    skipped_lines: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+    period_start: Mapped[date | None] = mapped_column(Date, nullable=True)
+    period_end: Mapped[date | None] = mapped_column(Date, nullable=True)
+    currency: Mapped[str | None] = mapped_column(String(3), nullable=True)
+
+    # The strongest correctness signal available, and free: where balances are
+    # printed, consecutive deltas must equal the parsed amounts.
+    balance_chain_checked: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False
+    )
+    balance_chain_ok: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+    # Text-layer versus rendered-page cross-check.
+    verified_pages: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    verified_mismatches: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+    # Safe tokens only — "balance_chain_broken", never statement content.
+    notes: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+    error_message: Mapped[str | None] = mapped_column(String(400), nullable=True)
+
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    committed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    upload: Mapped[Upload] = relationship()
+
+    __table_args__ = (
+        Index("ix_statement_imports_user_status", "user_id", "status"),
+        Index("ix_statement_imports_expires_at", "expires_at"),
+    )
+
+
+class StatementImportRow(Base, TimestampMixin):
+    """One parsed transaction, inert until the import is confirmed.
+
+    `source_page` and `source_line` are provenance: they locate the row in a
+    document the user already holds, and they make re-parsing the same file
+    produce the same idempotency keys. They are not statement content.
+    """
+
+    __tablename__ = "statement_import_rows"
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    import_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("statement_imports.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+
+    source_page: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_line: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    posted_date: Mapped[date] = mapped_column(Date, nullable=False)
+    description: Mapped[str] = mapped_column(String(500), nullable=False)
+    amount_cents: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    balance_cents: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+
+    confidence: Mapped[Decimal] = mapped_column(Numeric(4, 3), default=0, nullable=False)
+    notes: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+
+    # The user's decisions during review.
+    excluded: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    edited: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+    __table_args__ = (
+        Index("ix_statement_rows_import_page", "import_id", "source_page"),
+        CheckConstraint(
+            "confidence >= 0 AND confidence <= 1", name="ck_statement_rows_conf_range"
         ),
     )
 
