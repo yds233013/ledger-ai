@@ -94,7 +94,12 @@ export function UsageCard() {
       </div>
       <p className="border-t border-line px-5 py-3 text-xs leading-relaxed text-ink-muted">
         Daily counts reset at midnight UTC
-        {data.resets_at ? ` (${new Date(data.resets_at).toLocaleString()})` : ''}. Up to{' '}
+        {/* Rendered in the reader's own zone and labelled as such. "midnight UTC
+            (5:00:00 PM)" reads as a contradiction rather than a translation. */}
+        {data.resets_at
+          ? `, which is ${new Date(data.resets_at).toLocaleString()} where you are`
+          : ''}
+        . Up to{' '}
         {data.concurrent_jobs_limit} files process at once, and a single file can be up to{' '}
         {formatBytes(data.max_upload_bytes)}. Deleting files frees stored space; it does not return
         a day&rsquo;s upload count.
