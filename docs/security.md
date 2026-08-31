@@ -397,6 +397,44 @@ for over an hour — a worker killed outright never runs its own failure handler
 — deletes stored files for uploads that failed more than 7 days ago while
 keeping the row visible, and removes receipts never confirmed after 30 days.
 
+## Consent
+
+Three documents, versioned and recorded separately: terms of use, privacy, and
+what you upload. Each acceptance stores the document version, so "accepted the
+terms" is never asserted without saying *which* terms; changing a version
+re-prompts every account, and the history survives the bump.
+
+Enforcement is deliberately narrow. **Upload is the only gated action**, because
+it is the moment new financial data enters the system. Reading, exporting and
+deleting your own data are never gated — withholding somebody's own records
+until they accept a new document would be leverage, not consent. Demo accounts
+are exempt entirely: the data is synthetic and the account deletes itself within
+a day.
+
+## Account deletion
+
+Deletion has to reach five systems that cannot share a transaction — PostgreSQL,
+Redis, the RQ queue, R2 and Clerk — so it is built to be interrupted.
+
+**The tombstone is written first.** Before anything is removed, a row in
+`deleted_identities` records the intent. That one fact denies access
+immediately, stops lazy provisioning from rebuilding the account from a token
+minted moments earlier, makes a repeat request a no-op, and leaves a record of
+unfinished work for the reconciler. The state machine is
+`pending → storage_purged → complete`, advancing only when a step actually
+succeeded, so either partial failure leaves the identity blocked rather than
+half-deleted. Webhooks are not the guarantee: Clerk documents delivery as
+best-effort, so a worker sweep finishes the job and a dropped delivery costs
+time rather than correctness.
+
+**Status: CI-tested, not yet manually production-verified.** The behaviour above
+is covered by automated integration tests, including tombstone precedence,
+idempotent repeat deletion and webhook replay. It has not been exercised end to
+end against a live Clerk identity in production — an attempted disposable-account
+test could not be completed, and rather than claim a verification that never
+happened, it is recorded here as an open item. Data deletion (`Delete my data`)
+*has* been verified in production, including R2 purging.
+
 ## Production configuration
 
 The API refuses to start with `ENVIRONMENT=production` if `AUTH_SECRET` is
@@ -408,9 +446,16 @@ verifying the production images locally.
 Unhandled exceptions return a generic 500 with a correlation id; the traceback
 goes to the logs only.
 
+## AI
+
+`AI_ENABLED` is **false** in production. Every figure the product shows is a SQL
+aggregate over the user's own uploaded rows, and explanations come from a
+deterministic template engine rather than a model. No transaction, balance,
+merchant name or uploaded file is sent to any model provider, because no model
+provider is called at all.
+
 ## Known limitations
 
-- No rate limiting on login or analysis endpoints.
 - No CSRF token on the API; it relies on bearer auth plus a CORS allowlist
   rather than cookies, so it is not CSRF-exposed, but a cookie-based deployment
   would need one.
@@ -424,20 +469,30 @@ goes to the logs only.
   determined visitor can consume more in a day than an invited user can — at
   the cost of a fresh demo session each time, which the rate limiter also
   counts.
-- Uploaded files are stored unencrypted at rest in object storage (MinIO
-  locally, Cloudflare R2 in production). The provider encrypts the underlying
-  disk; Ledger AI adds no envelope encryption of its own, so bucket credentials
-  are enough to read a receipt. The bucket is private and no code path
-  generates a public or presigned URL. A production
-  deployment would enable bucket encryption.
-- Data export and deletion are not implemented (Phase 3). **Deleting a receipt
-  and purging its stored original from object storage is part of that work** —
-  in Phase 2 a receipt's file stays in storage for the life of the account.
+- Uploaded files carry no application-level encryption. Cloudflare R2 encrypts
+  objects at rest at the provider level, and Ledger AI adds no envelope
+  encryption of its own — so anyone holding the bucket credentials can read an
+  uploaded file. The bucket is private and no code path generates a public or
+  presigned URL; every file is served through an authorised endpoint scoped to
+  its owner. Statement PDFs are the exception to retention rather than to
+  encryption: they are purged on import or within 72 hours regardless.
+- Account deletion is covered by automated integration tests and is designed
+  to fail safely — the tombstone is written before anything is removed, so an
+  interrupted deletion denies access and is retried rather than half-completing.
+  It has **not** been manually exercised end to end in production. Disclosed
+  here rather than left implied; see "Account deletion" below.
 - No FX conversion; mixed-currency totals are restricted and disclosed rather
   than converted.
 
 
 ## Private beta authentication (Clerk)
+
+**Invite-only, enforced twice.** The Clerk instance runs in Restricted mode, so
+Clerk itself refuses to create an account for an uninvited address. Independently
+of that, the API requires a *local* invitation bound to the address Clerk
+verified before it will provision a profile — an identity that somehow
+authenticated without one is refused an account rather than given an empty one.
+Both halves are required, which is why inviting somebody is a paired operation.
 
 The browser sends a Clerk session JWT straight to this API, so the API
 establishes identity itself rather than trusting anything the browser asserts.
