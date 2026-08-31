@@ -54,7 +54,12 @@ describe('DemoBanner', () => {
   it('shows the time remaining in hours and minutes', () => {
     mockSession.value = session({ isDemo: true, demoExpiresAt: inHours(5.5) });
     render(<DemoBanner />);
-    expect(screen.getByTestId('demo-banner')).toHaveTextContent(/5h 2\dm/);
+    // 5h30m lands exactly on a minute boundary, and the remaining time is
+    // floored — so this renders "5h 30m" or "5h 29m" depending on how many
+    // milliseconds pass between building the deadline and rendering. What is
+    // under test is that both units are shown, not which side of the boundary
+    // the clock happened to fall on.
+    expect(screen.getByTestId('demo-banner')).toHaveTextContent(/5h (29|30)m/);
   });
 
   it('drops to minutes in the final hour', () => {
