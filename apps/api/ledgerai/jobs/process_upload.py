@@ -53,6 +53,16 @@ STAGE_PROGRESS: dict[JobStage, int] = {
 }
 
 
+class TerminalValidationError(ValidationError):
+    """A rejection that would come out identically on every retry.
+
+    The text-layer cross-check is deterministic: the same bytes render the same
+    pixels and reach the same verdict. Letting it ride the ordinary retry path
+    re-renders and re-OCRs a whole statement twice more to arrive at an answer
+    already known, and keeps the user's page budget held for the duration.
+    """
+
+
 class SensitiveContentError(Exception):
     """OCR found an unmasked identifier in a receipt.
 
@@ -207,6 +217,15 @@ def process_upload(upload_id: str, job_id: str) -> dict[str, int | str]:
             session.rollback()
             return _reject_upload(session, uuid.UUID(upload_id), uuid.UUID(job_id), exc)
 
+        except TerminalValidationError as exc:
+            # Deterministic: retrying cannot change the outcome, so the job ends
+            # here and the held budget goes back now rather than after two more
+            # full renders of the same file.
+            session.rollback()
+            return _fail_terminally(
+                session, uuid.UUID(upload_id), uuid.UUID(job_id), str(exc)
+            )
+
         except Exception as exc:  # noqa: BLE001 - every failure must reach the UI
             session.rollback()
             message = str(exc) if isinstance(exc, ValidationError) else _safe_error(exc)
@@ -225,6 +244,36 @@ def process_upload(upload_id: str, job_id: str) -> dict[str, int | str]:
                 )
             logger.exception("Upload %s failed", upload_id)
             raise
+
+
+def _fail_terminally(
+    session: Session, upload_id: uuid.UUID, job_id: uuid.UUID, message: str
+) -> dict[str, int | str]:
+    """End a job that cannot succeed, and hand the budget back immediately.
+
+    Returns normally rather than raising so RQ does not retry. The stored object
+    is left for the retention sweep, which is what already collects the files of
+    failed uploads — the row stays so the user can read why it failed.
+    """
+    upload = session.get(Upload, upload_id)
+    if upload is not None:
+        upload.status = UploadStatus.FAILED
+
+    job = session.get(ProcessingJob, job_id)
+    if job is not None:
+        _set_stage(
+            session,
+            job,
+            JobStage.FAILED,
+            progress=100,
+            error_message=message,
+            finished_at=datetime.now(UTC),
+        )
+
+    quota.release_for_upload(session, upload_id)
+    session.commit()
+    logger.info("upload.failed_terminally id=%s", upload_id)
+    return {"imported": 0, "error": message}
 
 
 def _reject_upload(
@@ -295,7 +344,7 @@ def _process_statement(
     page_texts = [" ".join(w.text for w in page) for page in pages]
     verification = statements.verify_text_layer(data, page_texts)
     if not verification.ok:
-        raise ValidationError(
+        raise TerminalValidationError(
             "The text inside that PDF does not match what the pages show, so it "
             "has not been imported. If you exported it from your bank, please "
             "download a fresh copy."

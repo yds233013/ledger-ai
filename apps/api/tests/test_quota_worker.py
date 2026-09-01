@@ -17,7 +17,13 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ledgerai.config import settings
-from ledgerai.jobs.process_upload import SensitiveContentError, _reject_upload, mark_job_failed
+from ledgerai.jobs.process_upload import (
+    SensitiveContentError,
+    TerminalValidationError,
+    _fail_terminally,
+    _reject_upload,
+    mark_job_failed,
+)
 from ledgerai.models import (
     JobStage,
     ProcessingJob,
@@ -119,6 +125,59 @@ class TestTerminalFailure:
         # The claim stays: the job already succeeded, and a late failure
         # callback must not refund an upload that was actually processed.
         assert len(sync_db.execute(select(UsageReservation)).scalars().all()) == 1
+
+
+class TestDeterministicFailure:
+    """A verdict that cannot change is not worth three attempts.
+
+    The text-layer cross-check renders and OCRs every page. Letting a refusal
+    ride the ordinary retry path repeats that work twice more to reach an answer
+    already known, and keeps the page budget held while it does.
+    """
+
+    def test_a_deterministic_refusal_hands_the_claim_back_at_once(
+        self, sync_db: Session
+    ) -> None:
+        upload, job = _reserved_upload(sync_db)
+        held = sync_db.execute(
+            select(UsageReservation).where(UsageReservation.upload_id == upload.id)
+        ).scalars().all()
+        assert held, "the claim is held while the job runs"
+
+        _fail_terminally(sync_db, upload.id, job.id, "does not match what the pages show")
+
+        assert sync_db.execute(
+            select(UsageReservation).where(UsageReservation.upload_id == upload.id)
+        ).scalars().all() == []
+
+    def test_a_deterministic_refusal_ends_the_job_and_says_why(
+        self, sync_db: Session
+    ) -> None:
+        upload, job = _reserved_upload(sync_db)
+        _fail_terminally(sync_db, upload.id, job.id, "does not match what the pages show")
+
+        sync_db.refresh(job)
+        sync_db.refresh(upload)
+        assert job.stage == JobStage.FAILED
+        assert job.finished_at is not None
+        assert "does not match" in (job.error_message or "")
+        # The row stays so the reason is readable; only the bytes are collected,
+        # by the same sweep that collects any failed upload's file.
+        assert upload.status == UploadStatus.FAILED
+
+    def test_it_returns_rather_than_raises_so_rq_does_not_retry(
+        self, sync_db: Session
+    ) -> None:
+        upload, job = _reserved_upload(sync_db)
+        result = _fail_terminally(sync_db, upload.id, job.id, "refused")
+        assert result["imported"] == 0
+        assert "refused" in str(result["error"])
+
+    def test_the_terminal_error_is_still_a_validation_error(self) -> None:
+        """So existing handling that reports ValidationError to the UI still applies."""
+        from ledgerai.security.validators import ValidationError
+
+        assert issubclass(TerminalValidationError, ValidationError)
 
 
 class TestRejectedUpload:

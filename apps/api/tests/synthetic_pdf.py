@@ -37,6 +37,10 @@ class Run:
     size: float = 9.5
     invisible: bool = False
     right_align_at: float | None = None
+    # Fill colour as RGB in 0..1. None keeps the page default (black). White is
+    # how a fixture hides a value in plain sight: the glyphs are drawn, the text
+    # layer carries them, and the page shows nothing where they are.
+    colour: tuple[float, float, float] | None = None
 
     def x0(self) -> float:
         if self.right_align_at is None:
@@ -63,8 +67,13 @@ def write_pdf(pages: list[list[Run]]) -> bytes:
         parts: list[str] = []
         for run in runs:
             mode = "3 Tr " if run.invisible else "0 Tr "
+            # Always stated, never inherited. Fill colour is graphics state that
+            # survives BT/ET, so one white run would otherwise silently paint
+            # every run after it white too.
+            red, green, blue = run.colour if run.colour is not None else (0.0, 0.0, 0.0)
+            fill = f"{red} {green} {blue} rg "
             parts.append(
-                f"BT {mode}/F1 {run.size} Tf {run.x0():.2f} {run.y:.2f} Td "
+                f"BT {fill}{mode}/F1 {run.size} Tf {run.x0():.2f} {run.y:.2f} Td "
                 f"({_escape(run.text)}) Tj ET"
             )
         stream = "\n".join(parts).encode()
@@ -178,3 +187,79 @@ DEFAULT_ROWS = [
 def simple_statement() -> bytes:
     """One page, five rows, balance column present — the happy path."""
     return write_pdf([transaction_page(DEFAULT_ROWS)])
+
+
+WHITE = (1.0, 1.0, 1.0)
+
+
+def white_amount_statement() -> bytes:
+    """One amount painted white-on-white; the rest of its row renders normally.
+
+    The attack that a row-level liveness test cannot see. The date, description
+    and balance on that row are all drawn and all legible, so the row looks
+    entirely healthy — only the pixels inside the amount's own box are empty.
+    """
+    runs = header_runs()
+    y = 680
+    for index, (date_text, description, amount, balance) in enumerate(DEFAULT_ROWS):
+        runs.append(Run(X_DATE, y, date_text))
+        runs.append(Run(X_DESC, y, description))
+        runs.append(
+            Run(
+                0,
+                y,
+                _money(amount),
+                right_align_at=X_AMOUNT_RIGHT,
+                colour=WHITE if index == 2 else None,
+            )
+        )
+        if balance is not None:
+            runs.append(Run(0, y, _money(balance), right_align_at=X_BALANCE_RIGHT))
+        y -= 15
+    return write_pdf([runs])
+
+
+def transposed_without_balance_statement() -> bytes:
+    """Two amounts swapped between rows, on a statement with no balance column.
+
+    The page renders row A's amount on row B and vice versa, while the text
+    layer claims the original order. Every value still present, every total
+    unchanged, and no balance chain to appeal to — so only comparing each
+    claimed token against the pixels at its own position can see it.
+    """
+    rows = [
+        ("12 Aug", "SANDBOX GROCERS 0042", -4210),
+        ("13 Aug", "SANDBOX TRANSIT AUTHORITY", -275),
+        ("14 Aug", "SANDBOX HARDWARE DEPOT", -8899),
+        ("15 Aug", "SANDBOX COFFEE BAR", -675),
+        ("16 Aug", "SANDBOX BOOKSHOP", -1540),
+    ]
+    first, second = 0, 2
+    runs = header_runs()
+    positions: dict[int, float] = {}
+    y = 680
+    for index in range(len(rows)):
+        positions[index] = y
+        y -= 15
+
+    for index, (date_text, description, amount) in enumerate(rows):
+        row_y = positions[index]
+        runs.append(Run(X_DATE, row_y, date_text))
+        runs.append(Run(X_DESC, row_y, description))
+        if index in (first, second):
+            continue
+        runs.append(Run(0, row_y, _money(amount), right_align_at=X_AMOUNT_RIGHT))
+
+    shown_first, shown_second = _money(rows[second][2]), _money(rows[first][2])
+    claimed_first, claimed_second = _money(rows[first][2]), _money(rows[second][2])
+    # Drawn: the swapped order.
+    runs.append(Run(0, positions[first], shown_first, right_align_at=X_AMOUNT_RIGHT))
+    runs.append(Run(0, positions[second], shown_second, right_align_at=X_AMOUNT_RIGHT))
+    # Claimed: the original order, invisible so only extraction sees it.
+    runs.append(
+        Run(0, positions[first], claimed_first, right_align_at=X_AMOUNT_RIGHT, invisible=True)
+    )
+    runs.append(
+        Run(0, positions[second], claimed_second, right_align_at=X_AMOUNT_RIGHT, invisible=True)
+    )
+    return write_pdf([runs])

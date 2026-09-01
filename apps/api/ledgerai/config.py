@@ -129,8 +129,26 @@ class Settings(BaseSettings):
     statement_review_hours: int = 72
     # A row is pre-ticked for import only at or above this confidence.
     statement_confidence_threshold: float = 0.80
-    # Pages sampled for the text-layer/render cross-check.
+    # Pages sampled for the text-layer/render cross-check. Retained so a
+    # deployment that still sets it starts cleanly; the cross-check reads every
+    # page that carries money tokens, because sampling three pages of a twelve
+    # page statement inspects a tampered one with probability 3/12.
     statement_verify_sample_pages: int = 3
+    # Render resolution for the cross-check. Below roughly 150 DPI OCR begins
+    # misreading digits on legitimate pages, which shows up as false conflicts
+    # rather than as missed tokens, so the base sits a clear step above that and
+    # only inconclusive pages pay for the retry.
+    statement_verify_dpi: int = 200
+    statement_verify_retry_dpi: int = 300
+    # Resolution for re-reading a single token's own region when the full-page
+    # pass missed it but the pixels show the value really is drawn.
+    statement_verify_focus_dpi: int = 400
+    # A page must resolve this share of its money tokens, and may leave at most
+    # max(count, fraction) of them unread, before it is accepted. Conflicting
+    # values are never tolerated at any count.
+    statement_verify_min_coverage: float = 0.90
+    statement_verify_omission_fraction: float = 0.05
+    statement_verify_max_omissions: int = 3
 
     # --- AI -----------------------------------------------------------------
     # Phase 1 ships the deterministic engine only. These exist so the Phase 2
@@ -267,6 +285,9 @@ class Settings(BaseSettings):
             "QUOTA_STATEMENT_IMPORTS": self.quota_statement_imports,
             "STATEMENT_REVIEW_HOURS": self.statement_review_hours,
             "STATEMENT_VERIFY_SAMPLE_PAGES": self.statement_verify_sample_pages,
+            "STATEMENT_VERIFY_DPI": self.statement_verify_dpi,
+            "STATEMENT_VERIFY_RETRY_DPI": self.statement_verify_retry_dpi,
+            "STATEMENT_VERIFY_MIN_COVERAGE": self.statement_verify_min_coverage,
         }
         for name, value in positives.items():
             if value <= 0:
@@ -274,6 +295,19 @@ class Settings(BaseSettings):
 
         if not 0.0 < self.statement_confidence_threshold <= 1.0:
             raise ValueError("STATEMENT_CONFIDENCE_THRESHOLD must be within (0, 1]")
+
+        if not 0.0 < self.statement_verify_min_coverage <= 1.0:
+            raise ValueError("STATEMENT_VERIFY_MIN_COVERAGE must be within (0, 1]")
+        if not 0.0 <= self.statement_verify_omission_fraction < 1.0:
+            raise ValueError("STATEMENT_VERIFY_OMISSION_FRACTION must be within [0, 1)")
+        if self.statement_verify_max_omissions < 0:
+            raise ValueError("STATEMENT_VERIFY_MAX_OMISSIONS must not be negative")
+        if self.statement_verify_retry_dpi < self.statement_verify_dpi:
+            raise ValueError(
+                "STATEMENT_VERIFY_RETRY_DPI must be at least STATEMENT_VERIFY_DPI, "
+                "or the adaptive retry would read the page less clearly than the "
+                "pass that was already inconclusive"
+            )
 
         if self.quota_statement_pages_per_day < self.max_statement_pages:
             raise ValueError(

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from datetime import date
 
+import pypdfium2 as pdfium
 import pytest
 
 from ledgerai.security.validators import ValidationError
@@ -25,12 +26,21 @@ from ledgerai.services.statements.layout import (
     looks_like_date,
 )
 from ledgerai.services.statements.parse import parse_amount, parse_date
+from ledgerai.services.statements.verify import (
+    _INK_MIN_FRACTION,
+    TokenCounts,
+    _claimed_tokens,
+    _ink_fraction,
+    _within_budget,
+)
 from tests.synthetic_pdf import (
     DEFAULT_ROWS,
     STAMP,
     Run,
     summary_page,
     transaction_page,
+    transposed_without_balance_statement,
+    white_amount_statement,
     write_pdf,
 )
 
@@ -268,6 +278,143 @@ class TestTamperDetection:
     def test_a_small_hidden_amount_is_caught_too(self) -> None:
         data = write_pdf([transaction_page(DEFAULT_ROWS, invisible_extra=(600, -1234))])
         assert not verify_text_layer(data, self._texts(data)).ok
+
+    def test_a_white_on_white_amount_is_caught_although_its_row_renders(self) -> None:
+        """The case that rules out judging a token by its neighbours.
+
+        Only the amount is painted white. The date, description and balance on
+        that row are drawn normally, so any test that asks "did this row
+        render?" answers yes and lets the file through. What settles it is ink
+        inside the amount's own box, of which there is none.
+        """
+        result = verify_text_layer(white_amount_statement(), None)
+        assert not result.ok
+        assert "page_no_ink" in result.notes
+
+    def test_transposed_amounts_are_caught_without_a_balance_column(self) -> None:
+        """Position is the evidence when arithmetic is unavailable.
+
+        Both amounts are still on the page and every total is unchanged, so a
+        set or multiset comparison sees nothing wrong, and there is no balance
+        column to reconcile. Comparing each claimed token against the pixels at
+        its own coordinates is what catches it.
+        """
+        result = verify_text_layer(transposed_without_balance_statement(), None)
+        assert not result.ok
+        assert "page_different_digits" in result.notes
+
+    def test_every_page_is_checked_not_a_sample(self) -> None:
+        """A tamper on a later page must not survive by being unlucky to sample."""
+        pages = [transaction_page(DEFAULT_ROWS, with_header=(i == 0)) for i in range(4)]
+        pages[2] = transaction_page(
+            DEFAULT_ROWS, with_header=False, invisible_extra=(600, -777_777)
+        )
+        result = verify_text_layer(write_pdf(pages), None)
+        assert result.checked_pages == 4
+        assert not result.ok
+
+    def test_an_honest_statement_does_not_pay_for_the_retry(self) -> None:
+        """The higher-resolution pass is adaptive, not routine."""
+        result = verify_text_layer(write_pdf([transaction_page(DEFAULT_ROWS)]), None)
+        assert result.ok
+        assert result.retried_pages == 0
+
+    def test_results_do_not_vary_between_runs(self) -> None:
+        data = white_amount_statement()
+        verdicts = [
+            (verify_text_layer(data, None).ok, tuple(verify_text_layer(data, None).notes))
+            for _ in range(2)
+        ]
+        assert len(set(verdicts)) == 1
+
+
+class TestInkEvidence:
+    """Separating "OCR missed it" from "the page never drew it".
+
+    These two look identical to a text comparison — nothing was read either way
+    — and the whole verifier turns on telling them apart.
+    """
+
+    def _first_page(self, data: bytes) -> tuple[object, object, float, float]:
+        document = pdfium.PdfDocument(data)
+        page = document[0]
+        _, height = page.get_size()
+        scale = 200 / 72
+        image = page.render(scale=scale).to_pil().convert("L")
+        return document, image, height, scale
+
+    def _boxes(self, document: object, index: int = 0) -> list:
+        return _claimed_tokens(document, index)
+
+    def test_drawn_glyphs_register_far_above_the_threshold(self) -> None:
+        data = write_pdf([transaction_page(DEFAULT_ROWS)])
+        document, image, height, scale = self._first_page(data)
+        try:
+            fractions = []
+            for _token, left, bottom, right, top in self._boxes(document):
+                region = (
+                    left * scale,
+                    (height - top) * scale,
+                    right * scale,
+                    (height - bottom) * scale,
+                )
+                fractions.append(_ink_fraction(image, region))
+            assert fractions
+            assert min(fractions) > _INK_MIN_FRACTION * 10
+        finally:
+            document.close()
+
+    def test_a_white_painted_amount_registers_no_ink_at_all(self) -> None:
+        document, image, height, scale = self._first_page(white_amount_statement())
+        try:
+            fractions = []
+            for _token, left, bottom, right, top in self._boxes(document):
+                region = (
+                    left * scale,
+                    (height - top) * scale,
+                    right * scale,
+                    (height - bottom) * scale,
+                )
+                fractions.append(_ink_fraction(image, region))
+            blank = [value for value in fractions if value < _INK_MIN_FRACTION]
+            inked = [value for value in fractions if value >= _INK_MIN_FRACTION]
+            assert len(blank) == 1, "exactly one amount was painted white"
+            # The two populations must not be adjacent: a threshold sitting in a
+            # gap this wide is a classifier, not a tuning parameter.
+            assert min(inked) > max(blank) * 100 or max(blank) == 0.0
+        finally:
+            document.close()
+
+
+class TestVerifierBudget:
+    """The omission budget, at its boundaries.
+
+    Conflicts are never budgeted; only tokens the page demonstrably drew and OCR
+    failed to read can be spent against it.
+    """
+
+    def _counts(self, **kwargs: int) -> TokenCounts:
+        counts = TokenCounts(total=kwargs.pop("total", 100))
+        for key, value in kwargs.items():
+            setattr(counts, key, value)
+        counts.matched = counts.total - counts.omitted - counts.conflicts
+        return counts
+
+    def test_a_single_conflict_fails_however_clean_the_rest_is(self) -> None:
+        assert not _within_budget(self._counts(total=100, conflicts=1))
+
+    def test_the_floor_admits_three_omissions_on_a_small_page(self) -> None:
+        assert _within_budget(self._counts(total=20, omitted=3))
+        assert not _within_budget(self._counts(total=20, omitted=4))
+
+    def test_the_fraction_takes_over_on_a_large_page(self) -> None:
+        assert _within_budget(self._counts(total=100, omitted=5))
+        assert not _within_budget(self._counts(total=100, omitted=6))
+
+    def test_coverage_below_the_floor_fails_closed(self) -> None:
+        counts = TokenCounts(total=100, matched=85, omitted=0, conflicts=0)
+        assert counts.coverage < 0.90
+        assert not _within_budget(counts)
 
 
 class TestLayoutVariants:
