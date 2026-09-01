@@ -73,13 +73,13 @@ async def test_garbage_token_is_rejected(client: AsyncClient) -> None:
 
 
 async def test_dashboard_excludes_transfers_from_spending(
-    client: AsyncClient, auth_headers: dict
+    client: AsyncClient, auth_headers: dict, demo_data: dict
 ) -> None:
-    """July: 100.00 groceries + 55.00 dining, plus a 500.00 transfer.
+    """Last month: 100.00 groceries + 55.00 dining, plus a 500.00 transfer.
     Spending must be 155.00, not 655.00."""
     response = await client.get("/api/dashboard", headers=auth_headers)
     data = response.json()
-    assert data["period_label"] == "July 2026"
+    assert data["period_label"] == demo_data["last_month"].strftime("%B %Y")
     assert data["total_spend"] == 155.00
     assert data["total_income"] == 3000.00
 
@@ -124,14 +124,17 @@ async def test_other_user_sees_only_their_own_row(
         ("category_slug=groceries", 3),
         ("category_slug=dining", 3),
         ("search=whole", 2),
-        ("start_date=2026-07-01", 8),
+        ("start_date=@last_month", 8),
         ("min_amount=100", 2),
         ("review=needs_review", 0),
     ],
 )
 async def test_transaction_filters(
-    client: AsyncClient, auth_headers: dict, query: str, expected: int
+    client: AsyncClient, auth_headers: dict, demo_data: dict, query: str, expected: int
 ) -> None:
+    # `@last_month` stands in for the first of the month the fixture seeded, so
+    # the case does not expire the way a written-down date does.
+    query = query.replace("@last_month", demo_data["last_month"].isoformat())
     data = (await client.get(f"/api/transactions?{query}", headers=auth_headers)).json()
     assert data["total"] == expected
 

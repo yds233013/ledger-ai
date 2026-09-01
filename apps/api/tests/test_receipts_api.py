@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import io
 import uuid
-from datetime import date
+from datetime import date, timedelta
 
 import pytest
 from httpx import AsyncClient
@@ -14,11 +14,22 @@ from sqlalchemy.orm import Session
 
 from ledgerai.models import Account, Receipt, ReceiptLinkMode, ReceiptStatus, Transaction, User
 from ledgerai.services.receipts import SYNTHETIC_ACCOUNT_NAME
-from tests.conftest import make_transaction
+from tests.conftest import make_transaction, seeded_months
 
 pytestmark = pytest.mark.asyncio
 
 RECEIPT_TOTAL_CENTS = 3036  # $30.36
+
+
+def _seeded_day() -> date:
+    """A day inside the month `demo_data` fills.
+
+    The dashboard anchors on the latest month that has data, so a receipt dated
+    outside that month lands in the previous period and every "spending went
+    up" assertion reads zero.
+    """
+    last_month, _ = seeded_months()
+    return last_month + timedelta(days=5)
 
 
 def png_bytes() -> bytes:
@@ -62,7 +73,7 @@ def seed_receipt(  # noqa: PLR0913
         ocr_confidence=0.93,
         raw_text="SANDBOX GROCERS\nTOTAL 30.36",
         merchant=merchant,
-        posted_date=posted or date(2026, 7, 6),
+        posted_date=posted or _seeded_day(),
         subtotal_cents=2805,
         tax_cents=231,
         tip_cents=0,
@@ -240,7 +251,7 @@ class TestMatchCandidates:
 
         transaction = make_transaction(
             sync_db, demo_data["user"], demo_data["account"],
-            posted=date(2026, 7, 6), cents=-RECEIPT_TOTAL_CENTS,
+            posted=_seeded_day(), cents=-RECEIPT_TOTAL_CENTS,
             description="SANDBOX GROCERS", merchant="Sandbox Grocers",
             category_slug="groceries", index=50,
         )
@@ -275,7 +286,7 @@ class TestMatchCandidates:
 
         make_transaction(
             sync_db, demo_data["user"], demo_data["account"],
-            posted=date(2026, 7, 6), cents=+RECEIPT_TOTAL_CENTS,
+            posted=_seeded_day(), cents=+RECEIPT_TOTAL_CENTS,
             description="SANDBOX GROCERS REFUND", merchant="Sandbox Grocers",
             category_slug="groceries", index=51,
         )
@@ -295,7 +306,7 @@ class TestMatchCandidates:
 
         make_transaction(
             sync_db, demo_data["user"], demo_data["account"],
-            posted=date(2026, 7, 6), cents=-RECEIPT_TOTAL_CENTS,
+            posted=_seeded_day(), cents=-RECEIPT_TOTAL_CENTS,
             description="SANDBOX GROCERS", merchant="Sandbox Grocers",
             category_slug="groceries", index=52,
         )
@@ -353,7 +364,7 @@ class TestLinking:
 
         transaction = make_transaction(
             sync_db, demo_data["user"], demo_data["account"],
-            posted=date(2026, 7, 6), cents=-RECEIPT_TOTAL_CENTS,
+            posted=_seeded_day(), cents=-RECEIPT_TOTAL_CENTS,
             description="SANDBOX GROCERS", merchant="Sandbox Grocers",
             category_slug="groceries", index=60,
         )

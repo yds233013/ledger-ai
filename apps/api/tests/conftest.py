@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import AsyncIterator, Iterator
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 import pytest_asyncio
@@ -210,6 +210,18 @@ def make_transaction(  # noqa: PLR0913
     return transaction
 
 
+def seeded_months() -> tuple[date, date]:
+    """The two months `demo_data` fills: (last month, the month before it).
+
+    Derived from UTC, because that is the clock the dashboard and the analysis
+    date phrases resolve against. Anything that hard-codes these months stops
+    agreeing with the fixture the moment the real month changes.
+    """
+    this_month = datetime.now(UTC).date().replace(day=1)
+    last = (this_month - timedelta(days=1)).replace(day=1)
+    return last, (last - timedelta(days=1)).replace(day=1)
+
+
 @pytest.fixture
 def demo_data(sync_db: Session) -> dict:
     """A small, fully-known dataset so expected totals are hand-checkable."""
@@ -218,8 +230,13 @@ def demo_data(sync_db: Session) -> dict:
     account = make_account(sync_db, user)
     other_account = make_account(sync_db, other, "SANDBOX — Other")
 
-    july = date(2026, 7, 1)
-    june = date(2026, 6, 1)
+    # "Last month" and the month before it, taken from the clock rather than
+    # written down, and from the same clock the analysis uses. Fixed months
+    # quietly stop being last month — these were July and June 2026, and every
+    # comparison test began asserting against an empty window the moment UTC
+    # rolled into September. Note UTC, not local: a machine behind UTC would
+    # otherwise seed one month and query another for several hours a day.
+    july, june = seeded_months()
 
     # July groceries: 40.00 + 60.00 = 100.00
     make_transaction(sync_db, user, account, posted=july + timedelta(days=3),
@@ -268,7 +285,15 @@ def demo_data(sync_db: Session) -> dict:
                      category_slug="shopping", index=11, currency="EUR")
 
     sync_db.commit()
-    return {"user": user, "other": other, "account": account}
+    # The two months the fixture seeded, so tests can name them without
+    # repeating the arithmetic or hard-coding a date that expires.
+    return {
+        "user": user,
+        "other": other,
+        "account": account,
+        "last_month": july,
+        "month_before": june,
+    }
 
 
 @pytest_asyncio.fixture
