@@ -19,6 +19,7 @@ from anyio import to_thread
 from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy import desc, select
+from sqlalchemy.orm import Session
 
 from ..deps import CurrentUser, DbSession, SyncSessionFactory
 from ..models import (
@@ -30,6 +31,7 @@ from ..models import (
 )
 from ..security.ratelimit import UPLOAD_LIMIT, enforce
 from ..services import statements
+from ..services.alerts import analyze_upload
 from ..services.ingest import resolve_account
 from ..services.normalize import extract_merchant, merchant_key, normalize_description
 
@@ -293,12 +295,35 @@ async def confirm_import(
     account_id = payload.account_id
     record_id = record.id
 
+    def _row_total(sync_session: Session, import_id: uuid.UUID) -> int:
+        return len(
+            sync_session.execute(
+                select(StatementImportRow).where(StatementImportRow.import_id == import_id)
+            ).scalars().all()
+        )
+
     def _commit() -> tuple[int, int, int, datetime]:
         with factory() as sync_session:
-            local = sync_session.get(StatementImport, record_id)
+            # Locked for the length of the transaction. The status check in the
+            # request above narrows the window but cannot close it: two
+            # confirmations arriving together would both read NEEDS_REVIEW and
+            # both try to insert, and the loser would surface a unique-constraint
+            # error instead of the "already imported" answer it should get.
+            local = sync_session.execute(
+                select(StatementImport).where(StatementImport.id == record_id).with_for_update()
+            ).scalar_one_or_none()
             if local is None or local.user_id != user_id:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND, detail="Import not found"
+                )
+
+            if local.status == StatementImportStatus.COMMITTED:
+                # Someone else confirmed it while this request waited on the lock.
+                return (
+                    0,
+                    0,
+                    _row_total(sync_session, local.id),
+                    local.committed_at or datetime.now(UTC),
                 )
 
             if account_id is not None:
@@ -347,16 +372,27 @@ async def confirm_import(
                 )
                 imported += 1
 
+            # Confirmed rows are transactions now, so they get the same
+            # detection every CSV import gets. Flushed first: the inserts above
+            # are still pending, and the analyzer reads them back by upload.
+            #
+            # Inline and inside this transaction on purpose. Alerts commit with
+            # the rows that caused them, so a failure here rolls back both and
+            # leaves the import staged and confirmable again rather than
+            # half-imported. Re-confirming creates nothing new — alert inserts
+            # are ON CONFLICT DO NOTHING on (transaction_id, alert_type) — and
+            # the cost is small next to the per-row dedupe lookup this loop
+            # already does, so a queue and an outbox would add two failure
+            # modes to avoid a latency that was measured and is not there.
+            sync_session.flush()
+            analyze_upload(sync_session, user_id, local.upload_id)
+
             statements.mark_committed(sync_session, local, account_id=account.id)
+            # Purging the stored PDF is the one step here that a rollback cannot
+            # undo, so it goes last — after everything that can still fail.
             statements.purge_original(sync_session, local)
             committed_at = local.committed_at or datetime.now(UTC)
-            total_rows = len(
-                sync_session.execute(
-                    select(StatementImportRow).where(
-                        StatementImportRow.import_id == local.id
-                    )
-                ).scalars().all()
-            )
+            total_rows = _row_total(sync_session, local.id)
             sync_session.commit()
             return imported, skipped, total_rows, committed_at
 
